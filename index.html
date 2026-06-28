@@ -302,6 +302,16 @@ const API = 'https://geoanalyzerx-api.onrender.com';
 
 // ── Auth state ────────────────────────────────────────────
 function getToken() { return localStorage.getItem('gax_token'); }
+
+let _serverAwake = false;
+async function wakeServer() {
+  if (_serverAwake) return;
+  try {
+    await fetch(API + '/health');
+    _serverAwake = true;
+    setTimeout(() => _serverAwake = false, 60000); // re-ping after 1 min
+  } catch(e) {}
+}
 function getUser()  { try { return JSON.parse(localStorage.getItem('gax_user')); } catch(e) { return null; } }
 
 async function checkAuth() {
@@ -343,6 +353,9 @@ async function register() {
   const password = document.getElementById('reg-password').value;
   const errEl    = document.getElementById('reg-error');
   errEl.style.display = 'none';
+  errEl.textContent = 'Connecting to server...'; errEl.style.color='var(--muted)'; errEl.style.display='block';
+  await wakeServer();
+  errEl.style.display = 'none';
   try {
     const res  = await fetch(API + '/auth/register', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, email, password}) });
     const data = await res.json();
@@ -359,6 +372,9 @@ async function login() {
   const email    = document.getElementById('login-email').value.trim();
   const password = document.getElementById('login-password').value;
   const errEl    = document.getElementById('login-error');
+  errEl.style.display = 'none';
+  errEl.textContent = 'Connecting to server...'; errEl.style.color='var(--muted)'; errEl.style.display='block';
+  await wakeServer();
   errEl.style.display = 'none';
   try {
     const res  = await fetch(API + '/auth/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
@@ -452,8 +468,8 @@ document.addEventListener('keydown', e => {
   else if (document.getElementById('form-login').style.display !== 'none') login();
 });
 
-// Check if already logged in
-checkAuth();
+// Wake server and check auth
+wakeServer().then(() => checkAuth());
 </script>
 </body>
 </html>
