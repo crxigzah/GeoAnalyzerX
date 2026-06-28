@@ -306,11 +306,14 @@ function getToken() { return localStorage.getItem('gax_token'); }
 let _serverAwake = false;
 async function wakeServer() {
   if (_serverAwake) return;
-  try {
-    await fetch(API + '/health');
-    _serverAwake = true;
-    setTimeout(() => _serverAwake = false, 60000); // re-ping after 1 min
-  } catch(e) {}
+  // Retry up to 10 times with 6s gap = 60s total (Render free tier needs up to 50s to wake)
+  for (let i = 0; i < 10; i++) {
+    try {
+      const res = await fetch(API + '/health', {signal: AbortSignal.timeout(8000)});
+      if (res.ok) { _serverAwake = true; setTimeout(() => _serverAwake = false, 60000); return; }
+    } catch(e) {}
+    await new Promise(r => setTimeout(r, 6000));
+  }
 }
 function getUser()  { try { return JSON.parse(localStorage.getItem('gax_user')); } catch(e) { return null; } }
 
@@ -353,8 +356,12 @@ async function register() {
   const password = document.getElementById('reg-password').value;
   const errEl    = document.getElementById('reg-error');
   errEl.style.display = 'none';
-  errEl.textContent = 'Connecting to server...'; errEl.style.color='var(--muted)'; errEl.style.display='block';
+  errEl.style.color='var(--muted)'; errEl.style.display='block';
+  let secs = 0;
+  const timer = setInterval(() => { secs++; errEl.textContent = 'Waking server... ' + secs + 's (free tier takes up to 50s)'; }, 1000);
+  errEl.textContent = 'Waking server... 0s (free tier takes up to 50s)';
   await wakeServer();
+  clearInterval(timer);
   errEl.style.display = 'none';
   try {
     const res  = await fetch(API + '/auth/register', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, email, password}) });
@@ -373,8 +380,12 @@ async function login() {
   const password = document.getElementById('login-password').value;
   const errEl    = document.getElementById('login-error');
   errEl.style.display = 'none';
-  errEl.textContent = 'Connecting to server...'; errEl.style.color='var(--muted)'; errEl.style.display='block';
+  errEl.style.color='var(--muted)'; errEl.style.display='block';
+  let secs2 = 0;
+  const timer2 = setInterval(() => { secs2++; errEl.textContent = 'Waking server... ' + secs2 + 's (free tier takes up to 50s)'; }, 1000);
+  errEl.textContent = 'Waking server... 0s (free tier takes up to 50s)';
   await wakeServer();
+  clearInterval(timer2);
   errEl.style.display = 'none';
   try {
     const res  = await fetch(API + '/auth/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password}) });
