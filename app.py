@@ -191,6 +191,10 @@ def create_checkout():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+    if not stripe.api_key or stripe.api_key == "":
+        return jsonify({"error": "not configured"}), 503
+    if not STRIPE_PRO_PRICE_ID:
+        return jsonify({"error": "not configured"}), 503
     try:
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
@@ -202,6 +206,8 @@ def create_checkout():
             metadata={"user_id": str(user_id), "username": username}
         )
         return jsonify({"url": session.url})
+    except stripe.error.AuthenticationError:
+        return jsonify({"error": "not configured"}), 503
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
