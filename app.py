@@ -151,3 +151,82 @@ init_db()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5001)), debug=False)
+
+# ── Stripe ────────────────────────────────────────────────
+import stripe
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRO_PRICE_ID   = os.environ.get("STRIPE_PRO_PRICE_ID", "")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://crxigzah.github.io/GeoAnalyzerX")
+
+@app.route("/stripe/create-checkout", methods=["POST", "OPTIONS"])
+def create_checkout():
+    """Create a Stripe checkout session for Pro upgrade."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    if not stripe.api_key:
+        return jsonify({"error": "Stripe not configured"}), 500
+    d = request.json or {}
+    token = d.get("token", "")
+    # Verify token and get user email
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.email, u.username FROM users u
+            JOIN sessions s ON s.user_id = u.id
+            WHERE s.token = :t AND s.expires_at > NOW()""", t=token)
+        conn.close()
+        if not rows: return jsonify({"error": "Invalid token"}), 401
+        user_id, email, username = rows[0][0], rows[0][1], rows[0][2]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            mode="subscription",
+            customer_email=email,
+            line_items=[{"price": STRIPE_PRO_PRICE_ID, "quantity": 1}],
+            success_url=FRONTEND_URL + "?upgrade=success&session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=FRONTEND_URL + "?upgrade=cancelled",
+            metadata={"user_id": str(user_id), "username": username}
+        )
+        return jsonify({"url": session.url})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/stripe/webhook", methods=["POST"])
+def stripe_webhook():
+    """Handle Stripe webhook events to upgrade user tier."""
+    payload = request.get_data()
+    sig     = request.headers.get("Stripe-Signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        user_id = session.get("metadata", {}).get("user_id")
+        if user_id:
+            try:
+                conn = get_db()
+                conn.run("UPDATE users SET tier = 'pro' WHERE id = :uid", uid=int(user_id))
+                conn.close()
+                print(f"Upgraded user {user_id} to pro")
+            except Exception as e:
+                print(f"Webhook DB error: {e}")
+
+    if event["type"] in ("customer.subscription.deleted", "customer.subscription.paused"):
+        # Downgrade back to free if subscription cancelled
+        customer_id = event["data"]["object"].get("customer")
+        if customer_id:
+            try:
+                customer = stripe.Customer.retrieve(customer_id)
+                email = customer.get("email", "")
+                conn  = get_db()
+                conn.run("UPDATE users SET tier = 'free' WHERE email = :e", e=email)
+                conn.close()
+                print(f"Downgraded {email} to free")
+            except Exception as e:
+                print(f"Webhook downgrade error: {e}")
+
+    return jsonify({"received": True})
