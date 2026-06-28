@@ -242,3 +242,145 @@ def stripe_webhook():
                 print(f"Webhook downgrade error: {e}")
 
     return jsonify({"received": True})
+
+# ── Two-Factor Authentication ──────────────────────────────
+import pyotp, qrcode, io, base64
+
+@app.route("/auth/2fa/setup", methods=["POST", "OPTIONS"])
+def setup_2fa():
+    """Generate a TOTP secret and QR code for the user."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    token = (request.json or {}).get("token", "")
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.email, u.username FROM users u
+            JOIN sessions s ON s.user_id=u.id
+            WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
+        conn.close()
+        if not rows: return jsonify({"error": "Invalid token"}), 401
+        user_id, email, username = rows[0][0], rows[0][1], rows[0][2]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    secret = pyotp.random_base32()
+    totp   = pyotp.TOTP(secret)
+    uri    = totp.provisioning_uri(name=email, issuer_name="GeoAnalyzerX")
+
+    # Generate QR code as base64 PNG
+    qr = qrcode.QRCode(box_size=6, border=2)
+    qr.add_data(uri)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#00c9a7", back_color="#0d0d12")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_b64 = base64.b64encode(buf.getvalue()).decode()
+
+    # Store pending secret (not active until verified)
+    try:
+        conn = get_db()
+        conn.run("UPDATE users SET totp_secret_pending=:s WHERE id=:uid", s=secret, uid=user_id)
+        conn.close()
+    except Exception:
+        # Column might not exist yet — add it
+        try:
+            conn = get_db()
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret_pending TEXT")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT FALSE")
+            conn.run("UPDATE users SET totp_secret_pending=:s WHERE id=:uid", s=secret, uid=user_id)
+            conn.close()
+        except Exception as e2:
+            return jsonify({"error": str(e2)}), 500
+
+    return jsonify({"secret": secret, "qr": qr_b64})
+
+@app.route("/auth/2fa/verify", methods=["POST", "OPTIONS"])
+def verify_2fa_setup():
+    """Verify the TOTP code and enable 2FA."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token, code = d.get("token",""), d.get("code","")
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.totp_secret_pending FROM users u
+            JOIN sessions s ON s.user_id=u.id
+            WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
+        conn.close()
+        if not rows: return jsonify({"error": "Invalid token"}), 401
+        user_id, pending = rows[0][0], rows[0][1]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    if not pending: return jsonify({"error": "No pending 2FA setup"}), 400
+    totp = pyotp.TOTP(pending)
+    if not totp.verify(code, valid_window=1):
+        return jsonify({"error": "Incorrect code — try again"}), 400
+
+    try:
+        conn = get_db()
+        conn.run("UPDATE users SET totp_secret=:s, totp_enabled=TRUE, totp_secret_pending=NULL WHERE id=:uid",
+                 s=pending, uid=user_id)
+        conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"enabled": True})
+
+@app.route("/auth/2fa/disable", methods=["POST", "OPTIONS"])
+def disable_2fa():
+    """Disable 2FA after verifying current code."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token, code = d.get("token",""), d.get("code","")
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.totp_secret FROM users u
+            JOIN sessions s ON s.user_id=u.id
+            WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
+        conn.close()
+        if not rows: return jsonify({"error": "Invalid token"}), 401
+        user_id, secret = rows[0][0], rows[0][1]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    if not secret: return jsonify({"error": "2FA not enabled"}), 400
+    if not pyotp.TOTP(secret).verify(code, valid_window=1):
+        return jsonify({"error": "Incorrect code"}), 400
+
+    try:
+        conn = get_db()
+        conn.run("UPDATE users SET totp_secret=NULL, totp_enabled=FALSE WHERE id=:uid", uid=user_id)
+        conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"disabled": True})
+
+@app.route("/auth/change-password", methods=["POST", "OPTIONS"])
+def change_password():
+    """Change user password after verifying current one."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token","")
+    current = d.get("current_password","")
+    new_pwd = d.get("new_password","")
+    if len(new_pwd) < 6: return jsonify({"error": "New password must be at least 6 characters"}), 400
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.password FROM users u
+            JOIN sessions s ON s.user_id=u.id
+            WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
+        conn.close()
+        if not rows: return jsonify({"error": "Invalid token"}), 401
+        user_id, pwd_hash = rows[0][0], rows[0][1]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    if hp(current) != pwd_hash:
+        return jsonify({"error": "Current password is incorrect"}), 400
+
+    try:
+        conn = get_db()
+        conn.run("UPDATE users SET password=:p WHERE id=:uid", p=hp(new_pwd), uid=user_id)
+        conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"changed": True})
