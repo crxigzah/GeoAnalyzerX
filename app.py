@@ -15,6 +15,19 @@ CORS(app, origins=[
     "*"
 ], supports_credentials=True)
 
+# ── Stripe config (must be at top level, not after __main__) ──
+import stripe
+import pyotp, qrcode, io, base64
+
+stripe.api_key            = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET     = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRO_PRICE_ID       = os.environ.get("STRIPE_PRO_PRICE_ID", "")
+FRONTEND_URL              = os.environ.get("FRONTEND_URL", "https://geoanalyzerx.netlify.app")
+
+print(f"Stripe key loaded: {'YES' if stripe.api_key else 'MISSING'}")
+print(f"Stripe price ID:   {'YES' if STRIPE_PRO_PRICE_ID else 'MISSING'}")
+print(f"Stripe webhook:    {'YES' if STRIPE_WEBHOOK_SECRET else 'MISSING'}")
+
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 @app.after_request
@@ -164,12 +177,6 @@ init_db()
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5001)), debug=False)
 
-# ── Stripe ────────────────────────────────────────────────
-import stripe
-stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRO_PRICE_ID   = os.environ.get("STRIPE_PRO_PRICE_ID", "")
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://crxigzah.github.io/GeoAnalyzerX")
 
 @app.route("/stripe/create-checkout", methods=["POST", "OPTIONS"])
 def create_checkout():
@@ -248,9 +255,6 @@ def stripe_webhook():
                 print(f"Webhook downgrade error: {e}")
 
     return jsonify({"received": True})
-
-# ── Two-Factor Authentication ──────────────────────────────
-import pyotp, qrcode, io, base64
 
 @app.route("/auth/2fa/setup", methods=["POST", "OPTIONS"])
 def setup_2fa():
