@@ -8,9 +8,21 @@ import pg8000.native
 from urllib.parse import urlparse
 
 app = Flask(__name__)
-CORS(app, origins=["*"])
+CORS(app, origins=[
+    "https://crxigzah.github.io",
+    "http://localhost:8080",
+    "http://localhost:3000",
+    "*"
+], supports_credentials=True)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+@app.after_request
+def add_cors(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Auth-Token'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    return response
 
 def get_db():
     url = urlparse(DATABASE_URL)
