@@ -306,13 +306,22 @@ function getToken() { return localStorage.getItem('gax_token'); }
 let _serverAwake = false;
 async function wakeServer() {
   if (_serverAwake) return;
-  // Retry up to 10 times with 6s gap = 60s total (Render free tier needs up to 50s to wake)
-  for (let i = 0; i < 10; i++) {
+  // Keep trying every 5s for up to 90s
+  for (let i = 0; i < 18; i++) {
     try {
-      const res = await fetch(API + '/health', {signal: AbortSignal.timeout(8000)});
-      if (res.ok) { _serverAwake = true; setTimeout(() => _serverAwake = false, 60000); return; }
-    } catch(e) {}
-    await new Promise(r => setTimeout(r, 6000));
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(API + '/health', {signal: controller.signal, mode: 'cors'});
+      clearTimeout(tid);
+      if (res.status < 500) {
+        _serverAwake = true;
+        setTimeout(() => _serverAwake = false, 55000);
+        return;
+      }
+    } catch(e) {
+      // timeout or network error — keep retrying
+    }
+    await new Promise(r => setTimeout(r, 5000));
   }
 }
 function getUser()  { try { return JSON.parse(localStorage.getItem('gax_user')); } catch(e) { return null; } }
