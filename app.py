@@ -204,7 +204,12 @@ def create_checkout():
         return jsonify({"error": "not configured"}), 503
     try:
         session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
+            payment_method_types=["card", "link"],
+            payment_method_options={
+                "card": {
+                    "request_three_d_secure": "automatic"
+                }
+            },
             mode="subscription",
             customer_email=email,
             line_items=[{"price": STRIPE_PRO_PRICE_ID, "quantity": 1}],
