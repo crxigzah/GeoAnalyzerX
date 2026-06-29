@@ -331,6 +331,46 @@ def disable_2fa():
     return jsonify({"disabled": True})
 
 # ── Scene Library (Cloud) ─────────────────────────────────
+@app.route("/scenes/validate", methods=["POST", "OPTIONS"])
+def validate_scene():
+    """Use Claude to check if image is a genuine Street View scene."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    import requests as req
+    image_b64 = (request.json or {}).get("image", "")
+    if not image_b64:
+        return jsonify({"valid": False, "reason": "no image"}), 400
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not anthropic_key:
+        # No key configured — allow upload (fail open)
+        return jsonify({"valid": True, "reason": "validation skipped"})
+    try:
+        resp = req.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": anthropic_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 10,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
+                        {"type": "text", "text": "Is this a Google Street View scene of an outdoor real-world location? Reply only YES or NO."}
+                    ]
+                }]
+            },
+            timeout=10
+        )
+        answer = resp.json().get("content", [{}])[0].get("text", "").strip().upper()
+        valid = answer.startswith("YES")
+        return jsonify({"valid": valid, "reason": answer})
+    except Exception as e:
+        print("Validate error:", e)
+        return jsonify({"valid": True, "reason": "validation error — allowing"})
+
 @app.route("/scenes/upload", methods=["POST", "OPTIONS"])
 def upload_scene():
     """Upload a scene image to R2 and record metadata in Supabase."""
