@@ -22,7 +22,7 @@ CF_R2_PUBLIC_URL       = os.environ.get("CF_R2_PUBLIC_URL", "")  # optional publ
 
 # ── Stripe ────────────────────────────────────────────────
 import stripe
-import pyotp, qrcode, qrcode_terminal, io as _io, base64 as _b64
+import pyotp, qrcode, io as _io, base64 as _b64
 
 stripe.api_key          = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET   = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
