@@ -559,10 +559,29 @@ def ai_analyse():
         remaining = -1  # unlimited
 
     try:
+    known_location = d.get("known_location", "")
+
+    if known_location:
+        prompt = (
+            f"CONFIRMED LOCATION: {known_location}. You know exactly where this is.\n"
+            f"Look at this Street View scene and identify the visual clues that confirm it is {known_location}.\n"
+            f"Focus on what you can ACTUALLY SEE. Output ONLY these 5 lines, plain text, no markdown:\n"
+            f"POLE DESCRIPTION: [what you see or 'no clear pole visible']\n"
+            f"LOCATION: {known_location}\n"
+            f"CONFIDENCE: High (coordinates confirmed)\n"
+            f"KEY CLUE: [the single most visible feature that identifies this as {known_location.split(',')[0]}]\n"
+            f"DETAIL: [2 sentences about what you see that confirms this location]"
+        )
+    else:
         prompt = (
             f"Country hint: {country or 'unknown'}. Analyse this Street View scene.\n"
             f"Always identify the SPECIFIC STATE or REGION, not just the country.\n"
-            f"Follow the system prompt format EXACTLY. Output ONLY the 5 lines, no extra text."
+            f"Output ONLY these 5 lines, plain text, no markdown:\n"
+            f"POLE DESCRIPTION: [what you see or 'no clear pole visible']\n"
+            f"LOCATION: [Country / State / Region]\n"
+            f"CONFIDENCE: [High/Medium/Low]\n"
+            f"KEY CLUE: [most specific visible detail]\n"
+            f"DETAIL: [2 sentences]"
         )
         result = call_claude([{
             "role": "user",
