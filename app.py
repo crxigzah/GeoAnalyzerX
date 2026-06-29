@@ -87,6 +87,8 @@ def get_r2_client():
     try:
         import boto3
         from botocore.config import Config
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         return boto3.client(
             's3',
             endpoint_url=f'https://{CF_ACCOUNT_ID}.r2.cloudflarestorage.com',
@@ -96,22 +98,23 @@ def get_r2_client():
             verify=False,
             config=Config(
                 retries={'max_attempts': 3, 'mode': 'standard'},
-                connect_timeout=10,
+                connect_timeout=15,
                 read_timeout=30,
+                s3={'addressing_style': 'path'}
             )
         )
     except Exception as e:
         print("R2 client error:", e)
         return None
 
-def upload_to_r2(image_b64: str, country: str, state: str, region: str) -> str | None:
+def upload_to_r2(image_b64: str, country: str, state: str, region: str):
     """Upload a base64 JPEG to R2, return the object key."""
     try:
+        image_bytes = base64.b64decode(image_b64)
+        key = f"scenes/{country}/{state or 'unknown'}/{region or 'central'}/{uuid.uuid4()}.jpg"
         s3 = get_r2_client()
         if not s3:
             return None
-        image_bytes = base64.b64decode(image_b64)
-        key = f"scenes/{country}/{state or 'unknown'}/{region or 'central'}/{uuid.uuid4()}.jpg"
         s3.put_object(
             Bucket=CF_R2_BUCKET,
             Key=key,
@@ -121,18 +124,65 @@ def upload_to_r2(image_b64: str, country: str, state: str, region: str) -> str |
         return key
     except Exception as e:
         print("R2 upload error:", e)
-        return None
+        # Try fallback with requests + presigned URL approach
+        try:
+            return upload_to_r2_requests(image_b64, country, state, region)
+        except Exception as e2:
+            print("R2 fallback error:", e2)
+            return None
 
-def get_r2_image_b64(key: str) -> str | None:
+def upload_to_r2_requests(image_b64: str, country: str, state: str, region: str):
+    """Fallback: upload via requests with manual auth."""
+    import hmac, hashlib, datetime, requests
+    image_bytes = base64.b64decode(image_b64)
+    key = f"scenes/{country}/{state or 'unknown'}/{region or 'central'}/{uuid.uuid4()}.jpg"
+    host = f"{CF_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    url  = f"https://{host}/{CF_R2_BUCKET}/{key}"
+
+    now = datetime.datetime.utcnow()
+    amz_date  = now.strftime('%Y%m%dT%H%M%SZ')
+    date_stamp = now.strftime('%Y%m%d')
+
+    # Build canonical request
+    payload_hash = hashlib.sha256(image_bytes).hexdigest()
+    canonical_headers = f"content-type:image/jpeg\nhost:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+    signed_headers = "content-type;host;x-amz-content-sha256;x-amz-date"
+    canonical_request = f"PUT\n/{CF_R2_BUCKET}/{key}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+
+    # Build string to sign
+    credential_scope = f"{date_stamp}/auto/s3/aws4_request"
+    string_to_sign = f"AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode()).hexdigest()}"
+
+    # Calculate signature
+    def sign(key, msg):
+        return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
+    signing_key = sign(sign(sign(sign(f"AWS4{CF_R2_SECRET_KEY}".encode('utf-8'), date_stamp), 'auto'), 's3'), 'aws4_request')
+    signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+
+    auth_header = (f"AWS4-HMAC-SHA256 Credential={CF_R2_ACCESS_KEY}/{credential_scope}, "
+                   f"SignedHeaders={signed_headers}, Signature={signature}")
+
+    headers = {
+        'Content-Type': 'image/jpeg',
+        'x-amz-date': amz_date,
+        'x-amz-content-sha256': payload_hash,
+        'Authorization': auth_header
+    }
+    resp = requests.put(url, data=image_bytes, headers=headers, verify=False, timeout=30)
+    if resp.status_code in (200, 201):
+        return key
+    raise Exception(f"requests upload failed: {resp.status_code} {resp.text[:200]}")
+
+def get_r2_image_b64(key: str):
     """Fetch an image from R2 and return as base64."""
     try:
-        # If public URL is configured, fetch directly
         if CF_R2_PUBLIC_URL:
-            import urllib.request
+            import requests
             url = f"{CF_R2_PUBLIC_URL.rstrip('/')}/{key}"
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                return base64.b64encode(resp.read()).decode()
-        # Otherwise use signed URL via boto3
+            resp = requests.get(url, timeout=10, verify=False)
+            if resp.status_code == 200:
+                return base64.b64encode(resp.content).decode()
+            return None
         s3 = get_r2_client()
         if not s3:
             return None
