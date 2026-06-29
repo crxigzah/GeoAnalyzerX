@@ -627,7 +627,7 @@ def ai_teaching():
             "- TRICKY must name ONE specific Australian state or country that looks similar and state the SINGLE visual difference\n"
             "- Never mention things you cannot clearly see\n\n"
             "Format EXACTLY as:\n"
-            "KEY CLUE: [one specific visible feature — soil colour, vegetation, road, landscape]\n"
+            "KEY CLUE: [specific visible feature + WHY it proves this location, e.g. 'Red laterite soil — this iron-rich volcanic soil is only found in WA and NT, not in eastern Australia's grey/sandy soils']\n"
             "LESSON 1: [visible clue 1 and what it tells you about this location]\n"
             "LESSON 2: [visible clue 2]\n"
             "LESSON 3: [visible clue 3]\n"
