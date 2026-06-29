@@ -72,6 +72,11 @@ def init_db():
             contributor_user_id TEXT,
             quality_score INT DEFAULT 0, times_used INT DEFAULT 0,
             uploaded_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("""CREATE TABLE IF NOT EXISTS usage (
+            user_id INT REFERENCES users(id),
+            date DATE DEFAULT CURRENT_DATE,
+            analyses INT DEFAULT 0,
+            PRIMARY KEY (user_id, date))""")
         conn.run("CREATE INDEX IF NOT EXISTS idx_scenes_state ON scenes(state)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_scenes_country_region ON scenes(country, region)")
         conn.close()
@@ -330,7 +335,329 @@ def disable_2fa():
         return jsonify({"error": str(e)}), 500
     return jsonify({"disabled": True})
 
-# ── Scene Library (Cloud) ─────────────────────────────────
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+FREE_DAILY_LIMIT = 10
+
+SYSTEM_PROMPT = """You are an elite GeoGuessr analyst at world champion level. This is a screenshot of the GeoGuessr browser. The Street View scene is on the LEFT side. Ignore the GeoGuessr UI panel on the right.
+
+POLE ANALYSIS RULES — READ FIRST:
+Before mentioning ANY pole feature, ask yourself: "Can I clearly see this detail, or am I guessing?"
+- If poles are DISTANT (small in frame, further than 50m): say "poles visible but too distant to identify type"
+- If poles are CLOSE and CLEAR: describe exactly what you see on the pole BODY and TOP
+- NEVER claim green base, Stobie beams, L-shaped crossbar, disc insulators unless you can clearly see them
+- When uncertain about poles: say so and use landscape/other clues instead
+
+ANALYSIS FRAMEWORK:
+
+STEP 1 — DRIVING SIDE: Left or right?
+
+STEP 2 — SCRIPT/LANGUAGE: Read every word visible. Script = instant country confirmation.
+Cyrillic=Russia/Ukraine/Bulgaria/Serbia/Mongolia. Arabic=Middle East/North Africa. Hebrew=Israel.
+Greek=Greece/Cyprus. Thai(circles at stroke ends)=Thailand. Khmer(hooks at top)=Cambodia.
+Korean Hangul(round blocky)=South Korea. Japanese(hiragana+kanji)=Japan. Chinese(square complex)=China/Taiwan.
+Hindi(line above letters)=India. Georgian(curvy unique)=Georgia. Armenian(angular unique)=Armenia.
+
+STEP 3 — GOOGLE CAR META (pan down, look at car shadow or bonnet):
+Massive black snorkel front right = KENYA 100%.
+4 roof bars one with black tape right end = GHANA.
+Large pickup truck + white police car following = NIGERIA.
+Red car + long antenna = UKRAINE.
+Camping equipment on roof = MONGOLIA.
+White car white roof rack = KYRGYZSTAN.
+Very low to ground = JAPAN or SWITZERLAND.
+Stubby antenna white car = ECUADOR.
+Ghostly black front = ARGENTINA or URUGUAY.
+White rear visible = CHILE.
+Red Google car = usually WESTERN AUSTRALIA.
+Dark grey snorkel = usually NSW or ACT Australia.
+
+STEP 4 — ROAD LINES:
+Yellow centre lines = Americas (USA/Canada/Mexico/Brazil/Argentina/Colombia/Chile) + Iceland + Norway.
+OUTER yellow lines = SOUTH AFRICA only worldwide.
+Triple lines double yellow + white dashes = URUGUAY only in Americas.
+White lines = Europe/Asia/Africa/Oceania/Australia.
+Blue rumble strips = SOUTH KOREA.
+
+STEP 5 — BOLLARDS (only if clearly visible and close):
+Black+yellow bands = QUEENSLAND ONLY.
+Black+white diagonal stripes = WESTERN AUSTRALIA ONLY.
+Red reflector all the way around = NEW ZEALAND (Australia = front only).
+Red diagonal stripe wrapping = POLAND.
+Fluorescent orange in black section = CZECH or SLOVAKIA.
+Rounded cylindrical reflector all around = FRANCE.
+Yellow bollards = ICELAND or SPAIN.
+Obelisk alternating black+white = THAILAND.
+White bollard large brown base = WESTERN AUSTRALIA.
+
+STEP 6 — POLES (ONLY IF CLEARLY VISIBLE AND CLOSE — otherwise skip):
+If poles are small or far: do NOT describe specific features. Say "distant poles, type unclear".
+STOBIE (SA): concrete centre + thick steel H-beams BOTH sides full height = South Australia. VERY RARE.
+VIC: round concrete + 3 DISC insulators (2 sides flat + 1 vertical) = Victoria.
+QLD: insulators tilt upward at crossbar ends like a smile = Queensland.
+NT: rusty brown metal tube with holes = Northern Territory.
+TAS: metal L-shaped crossbar at top OR olive green rectangular guard clamped around pole = Tasmania.
+WA: green painted base section = Western Australia.
+Dense tangled wires everywhere = JAPAN.
+Holey poles (large holes all down pole) = HUNGARY or ROMANIA.
+Ladder poles (horizontal supports like ladder) = BRAZIL or NIGERIA.
+
+STEP 7 — LANDSCAPE (use this when poles/bollards are unclear — very reliable):
+Orange/red gravel road + low scrubby eucalyptus + flat = Western Australia or South Australia inland.
+Dark red soil + bright green grass + dark tree trunks = Darwin NT specifically.
+Orange termite mounds from red dirt = Northern Territory Australia.
+Tall dense green sugarcane crops lining road + tropical mountains = far north Queensland.
+Grass trees (dark trunk, long spiky tufts) = Western Australia ONLY.
+Flat golden/brown dry grass + scattered eucalyptus = inland NSW or SA.
+Green rolling hills + dense eucalyptus = Tasmania or Victoria.
+Vast flat steppe no trees = Mongolia/Kazakhstan/central Russia.
+Birch trees white bark = Russia/Scandinavia/Baltic.
+Saguaro cactus with arms = Arizona USA ONLY.
+Acacia trees flat savanna = sub-Saharan Africa.
+Dense tropical jungle red laterite soil = equatorial Africa or Amazon Brazil.
+Terraced rice paddies = SE Asia/Japan/China south.
+Olive groves dry hills = Mediterranean Spain/Italy/Greece/Turkey.
+Fjords dramatic mountains = Norway.
+Almost no trees only grass volcanic = Iceland.
+Bare treeless tabletop mountains horizontal ridges = Lesotho.
+Lavender fields = Provence France.
+Eucalyptus plantations uniform pale bark = Australia/Portugal/Brazil/East Africa.
+Ferns in forest = New Zealand.
+
+STEP 8 — ARCHITECTURE AND COMMERCIAL CLUES:
+Soviet grey concrete blocks = Russia/Ukraine/Eastern Europe.
+Houses on stilts wide verandas = Queensland Australia.
+Round thatched huts = Lesotho/sub-Saharan Africa.
+White cubic flat roofs = Greece/Mediterranean.
+Half-timbered Fachwerk = Germany.
+Gas station brands: YPF=Argentina. Petrobras=Brazil.
+Website TLDs on signs: .co.za=SA. .co.nz=NZ. .com.au=Australia. .pl=Poland.
+
+ANTI-HALLUCINATION RULES:
+- If no pole is clearly visible or close enough to identify: skip pole analysis entirely.
+- Never claim to see a feature (green base, steel beams, disc insulators, L-shape) unless you can genuinely see it.
+- If image shows only landscape and distant poles: lead with landscape analysis.
+- Ambiguous Australian concrete pole = VICTORIA by default, not SA.
+
+Format EXACTLY as:
+POLE DESCRIPTION: [what you literally see clearly, or "poles distant/not visible - using landscape clues"]
+LOCATION: [Country / State / Region]
+CONFIDENCE: [High/Medium/Low]
+KEY CLUE: [the single most clearly visible detail that drives your conclusion]
+DETAIL: [2-3 sentences based only on what is actually visible]"""
+
+def call_claude(messages, system=None, max_tokens=400):
+    """Call Claude API via Render."""
+    import requests as req
+    if not ANTHROPIC_API_KEY:
+        raise Exception("ANTHROPIC_API_KEY not configured on server")
+    payload = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": max_tokens,
+        "messages": messages
+    }
+    if system:
+        payload["system"] = system
+    resp = req.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        },
+        json=payload,
+        timeout=30
+    )
+    data = resp.json()
+    if "error" in data:
+        raise Exception(data["error"].get("message", str(data["error"])))
+    return data["content"][0]["text"].strip()
+
+def get_user_from_token(token):
+    """Returns (user_id, tier) or (None, None)."""
+    if not token:
+        return None, None
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.tier FROM users u
+            JOIN sessions s ON s.user_id=u.id
+            WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
+        conn.close()
+        if rows:
+            return rows[0][0], rows[0][1]
+    except Exception:
+        pass
+    return None, None
+
+def check_and_increment_usage(user_id):
+    """Returns (allowed, remaining). Increments counter if allowed."""
+    if not user_id:
+        return False, 0
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT analyses FROM usage
+            WHERE user_id=:uid AND date=CURRENT_DATE""", uid=user_id)
+        count = rows[0][0] if rows else 0
+        if count >= FREE_DAILY_LIMIT:
+            conn.close()
+            return False, 0
+        if rows:
+            conn.run("""UPDATE usage SET analyses=analyses+1
+                WHERE user_id=:uid AND date=CURRENT_DATE""", uid=user_id)
+        else:
+            conn.run("""INSERT INTO usage (user_id, analyses)
+                VALUES (:uid, 1)""", uid=user_id)
+        conn.close()
+        return True, FREE_DAILY_LIMIT - count - 1
+    except Exception as e:
+        print("Usage check error:", e)
+        return True, -1  # fail open
+
+# ── AI Endpoints ──────────────────────────────────────────
+@app.route("/ai/analyse", methods=["POST", "OPTIONS"])
+def ai_analyse():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token     = d.get("token", "")
+    image_b64 = d.get("image", "")
+    country   = d.get("country", "")
+
+    if not image_b64:
+        return jsonify({"error": "No image provided"}), 400
+
+    user_id, tier = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in", "code": "auth"}), 401
+
+    if tier != "pro":
+        allowed, remaining = check_and_increment_usage(user_id)
+        if not allowed:
+            return jsonify({
+                "error": "Daily limit reached",
+                "code": "limit",
+                "message": f"You've used all {FREE_DAILY_LIMIT} free analyses for today. Upgrade to Pro for unlimited access, or come back tomorrow.",
+                "remaining": 0
+            }), 429
+    else:
+        remaining = -1  # unlimited
+
+    try:
+        prompt = f"Country hint: {country or 'unknown'}. Analyse this Street View scene."
+        result = call_claude([{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
+                {"type": "text", "text": prompt}
+            ]
+        }], system=SYSTEM_PROMPT, max_tokens=400)
+        return jsonify({"result": result, "remaining": remaining, "tier": tier})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/ai/teaching", methods=["POST", "OPTIONS"])
+def ai_teaching():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token        = d.get("token", "")
+    image_b64    = d.get("image", "")
+    correct_name = d.get("correct_name", "")
+    distance_km  = d.get("distance_km", "?")
+    ref_images   = d.get("ref_images", [])  # list of b64 from cloud library
+
+    if not image_b64:
+        return jsonify({"error": "No image"}), 400
+
+    user_id, tier = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in", "code": "auth"}), 401
+
+    # Teaching counts against the same daily limit as analysis
+    if tier != "pro":
+        allowed, remaining = check_and_increment_usage(user_id)
+        if not allowed:
+            return jsonify({
+                "error": "Daily limit reached",
+                "code": "limit",
+                "message": f"You've used all {FREE_DAILY_LIMIT} free analyses for today. Upgrade to Pro for unlimited access, or come back tomorrow.",
+                "remaining": 0
+            }), 429
+
+    try:
+        content = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
+            {"type": "text", "text": f"This Street View scene is from {correct_name} (player was {distance_km}km off)."}
+        ]
+        # Add up to 3 reference images from cloud library
+        for i, ref_b64 in enumerate(ref_images[:3]):
+            content.append({"type": "text", "text": f"Reference image {i+1} from {correct_name}:"})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ref_b64}})
+
+        content.append({"type": "text", "text": (
+            "Compare the player's scene to the reference images and provide a teaching lesson.\n"
+            "Format EXACTLY as:\n"
+            "KEY CLUE: [the single most identifiable visual feature the player missed]\n"
+            "LESSON 1: [specific visual clue visible in their scene]\n"
+            "LESSON 2: [second teaching point]\n"
+            "LESSON 3: [third teaching point]\n"
+            "TRICKY: [what this location is commonly confused with and why]"
+        )})
+
+        result = call_claude([{"role": "user", "content": content}], max_tokens=350)
+        return jsonify({"teaching": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/ai/chat", methods=["POST", "OPTIONS"])
+def ai_chat():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token        = d.get("token", "")
+    message      = d.get("message", "").strip()
+    last_analysis = d.get("last_analysis", "")
+
+    if not message:
+        return jsonify({"error": "Empty message"}), 400
+
+    user_id, tier = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in", "code": "auth"}), 401
+
+    # Chat only for pro users
+    if tier != "pro":
+        return jsonify({
+            "error": "Pro required",
+            "code": "pro",
+            "message": "GeoX chat is a Pro feature. Upgrade to Pro for unlimited AI chat."
+        }), 403
+
+    try:
+        system = "You are GeoAnalyzerX (GeoX), an expert GeoGuessr analyst. Be concise, 2-3 sentences, plain text only. Do NOT just agree if the user is wrong — correct them with specific visual evidence."
+        result = call_claude([{
+            "role": "user",
+            "content": f"Last analysis: {last_analysis[:400]}\n\nUser: {message}"
+        }], system=system, max_tokens=200)
+        return jsonify({"reply": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/ai/usage", methods=["POST", "OPTIONS"])
+def ai_usage():
+    """Return today's usage for a user."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    token = (request.json or {}).get("token", "")
+    user_id, tier = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    if tier == "pro":
+        return jsonify({"used": 0, "limit": -1, "remaining": -1, "tier": "pro"})
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT analyses FROM usage WHERE user_id=:uid AND date=CURRENT_DATE", uid=user_id)
+        conn.close()
+        used = rows[0][0] if rows else 0
+        return jsonify({"used": used, "limit": FREE_DAILY_LIMIT, "remaining": max(0, FREE_DAILY_LIMIT - used), "tier": tier})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 @app.route("/scenes/validate", methods=["POST", "OPTIONS"])
 def validate_scene():
     """Use Claude to check if image is a genuine Street View scene."""
