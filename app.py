@@ -622,6 +622,7 @@ def ai_teaching():
             "4. LANDSCAPE — flat/hilly/mountainous, cleared/forested, agricultural patterns\n"
             "5. INFRASTRUCTURE — fencing style, power poles, buildings\n\n"
             "Rules:\n"
+            "- CRITICAL: Output PLAIN TEXT ONLY. No markdown, no asterisks (**), no headers (#). Just raw text.\n"
             "- KEY CLUE: ONE specific thing you can actually SEE in the image (not abstract concepts)\n"
             "- Each LESSON must describe something VISIBLE IN THE SCENE\n"
             "- TRICKY must name ONE specific Australian state or country that looks similar and state the SINGLE visual difference\n"
