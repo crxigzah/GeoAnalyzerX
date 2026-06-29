@@ -596,19 +596,25 @@ def ai_teaching():
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ref_b64}})
 
         content.append({"type": "text", "text": (
-            f"You are an elite GeoGuessr coach. The player was looking at a Street View scene from {correct_name} and guessed wrong.\n\n"
-            f"Analyse the PLAYER'S SCENE (first image) and teach them specifically what visual clues identify it as {correct_name}.\n\n"
+            f"You are an elite GeoGuessr coach. The player guessed wrong — the correct location is {correct_name}.\n\n"
+            f"Look at the PLAYER'S SCENE and identify the strongest visual clues that PROVE it is {correct_name}.\n\n"
+            "PRIORITY ORDER for clues (most reliable first):\n"
+            "1. SOIL COLOUR — red/orange laterite, pale sandy, dark volcanic, grey clay etc\n"
+            "2. VEGETATION — specific tree species, grass type, scrub density\n"
+            "3. ROAD SURFACE & COLOUR — tarmac colour, gravel colour, road width\n"
+            "4. LANDSCAPE — flat/hilly/mountainous, cleared/forested, agricultural patterns\n"
+            "5. INFRASTRUCTURE — fencing style, power poles, buildings\n\n"
             "Rules:\n"
-            "- KEY CLUE must be ONE specific visual detail actually visible in the player's scene (soil colour, road markings, vegetation type, pole style, etc)\n"
-            "- Each LESSON must reference something ACTUALLY VISIBLE in the scene\n"
-            "- TRICKY must name a SPECIFIC different region/country that looks similar and explain the visual difference\n"
-            "- Be specific to the exact location, not generic country facts\n\n"
+            "- KEY CLUE: ONE specific thing you can actually SEE in the image (not abstract concepts)\n"
+            "- Each LESSON must describe something VISIBLE IN THE SCENE\n"
+            "- TRICKY must name ONE specific Australian state or country that looks similar and state the SINGLE visual difference\n"
+            "- Never mention things you cannot clearly see\n\n"
             "Format EXACTLY as:\n"
-            "KEY CLUE: [one specific visible detail that is the strongest identifier for this exact location]\n"
-            "LESSON 1: [first visual clue visible in the scene and what it tells you]\n"
-            "LESSON 2: [second visual clue visible in the scene]\n"
-            "LESSON 3: [third visual clue visible in the scene]\n"
-            "TRICKY: [name a specific region like 'Northern Territory' or 'South Australia' that looks similar, and explain the ONE visual difference that separates them]"
+            "KEY CLUE: [one specific visible feature — soil colour, vegetation, road, landscape]\n"
+            "LESSON 1: [visible clue 1 and what it tells you about this location]\n"
+            "LESSON 2: [visible clue 2]\n"
+            "LESSON 3: [visible clue 3]\n"
+            "TRICKY: [specific place it looks like, e.g. 'Western Australia' or 'New South Wales', and the ONE visual difference]"
         )})
 
         result = call_claude([{"role": "user", "content": content}], max_tokens=350)
