@@ -801,7 +801,6 @@ def get_refs():
     try:
         conn = get_db()
         if state and region:
-            # Prefer same region, then fall back to any region in state
             rows = conn.run("""
                 SELECT r2_key, region, quality_score FROM scenes
                 WHERE state ILIKE :state
