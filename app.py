@@ -82,46 +82,56 @@ def init_db():
 def hp(p): return hashlib.sha256(p.encode()).hexdigest()
 
 # ── R2 / S3 helpers ───────────────────────────────────────
-def upload_to_r2(image_b64: str, country: str, state: str, region: str):
-    """Upload image to R2 via Cloudflare API (bypasses boto3 SSL issues)."""
-    try:
-        import requests, urllib3
-        urllib3.disable_warnings()
-        image_bytes = base64.b64decode(image_b64)
-        key = f"scenes/{country}/{state or 'unknown'}/{region or 'central'}/{uuid.uuid4()}.jpg"
+SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")  # service role key
+STORAGE_BUCKET     = "scenes"
 
-        url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/r2/buckets/{CF_R2_BUCKET}/objects/{key}"
-        headers = {
-            "Authorization": f"Bearer {CF_R2_SECRET_KEY}",
-            "Content-Type": "image/jpeg"
-        }
-        resp = requests.put(url, data=image_bytes, headers=headers, timeout=30)
-        if resp.status_code in (200, 201):
-            print(f"R2 upload OK: {key}")
-            return key
-        print(f"R2 upload failed: {resp.status_code} {resp.text[:200]}")
-        return None
-    except Exception as e:
-        print("R2 upload error:", e)
-        return None
-
-def get_r2_image_b64(key: str):
-    """Fetch image from R2 via Cloudflare API."""
+def upload_to_storage(image_b64: str, country: str, state: str, region: str):
+    """Upload image to Supabase Storage."""
     try:
         import requests
-        url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/r2/buckets/{CF_R2_BUCKET}/objects/{key}"
-        headers = {"Authorization": f"Bearer {CF_R2_SECRET_KEY}"}
+        image_bytes = base64.b64decode(image_b64)
+        key = f"{country}/{state or 'unknown'}/{region or 'central'}/{uuid.uuid4()}.jpg"
+        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{key}"
+        headers = {
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "image/jpeg",
+            "x-upsert": "true"
+        }
+        resp = requests.post(url, data=image_bytes, headers=headers, timeout=30)
+        if resp.status_code in (200, 201):
+            print(f"Storage upload OK: {key}")
+            return key
+        print(f"Storage upload failed: {resp.status_code} {resp.text[:200]}")
+        return None
+    except Exception as e:
+        print("Storage upload error:", e)
+        return None
+
+def get_storage_image_b64(key: str):
+    """Fetch image from Supabase Storage."""
+    try:
+        import requests
+        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{key}"
+        headers = {"Authorization": f"Bearer {SUPABASE_KEY}"}
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code == 200:
             return base64.b64encode(resp.content).decode()
-        print(f"R2 fetch failed: {resp.status_code}")
+        print(f"Storage fetch failed: {resp.status_code}")
         return None
     except Exception as e:
-        print("R2 fetch error:", e)
+        print("Storage fetch error:", e)
         return None
 
+# aliases so rest of code doesn't change
+def upload_to_r2(image_b64, country, state, region):
+    return upload_to_storage(image_b64, country, state, region)
+
+def get_r2_image_b64(key):
+    return get_storage_image_b64(key)
+
 def get_r2_client():
-    pass  # no longer used
+    pass
 
 def classify_region(lat, lng, state):
     """Classify lat/lng into a broad region quadrant."""
