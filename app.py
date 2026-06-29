@@ -32,7 +32,6 @@ STRIPE_PRO_PRICE_ID     = os.environ.get("STRIPE_PRO_PRICE_ID", "")
 print(f"Stripe key loaded: {'YES' if stripe.api_key else 'MISSING'}")
 print(f"Stripe price ID:   {'YES' if STRIPE_PRO_PRICE_ID else 'MISSING'}")
 print(f"Stripe webhook:    {'YES' if STRIPE_WEBHOOK_SECRET else 'MISSING'}")
-print(f"R2 configured:     {'YES' if CF_R2_ACCESS_KEY else 'MISSING'}")
 
 @app.after_request
 def add_cors(response):
