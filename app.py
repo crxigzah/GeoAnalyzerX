@@ -596,14 +596,19 @@ def ai_teaching():
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ref_b64}})
 
         content.append({"type": "text", "text": (
-            f"Analyse the PLAYER'S SCENE above and teach them what visual clues identify it as {correct_name}.\n"
-            "Focus on what is ACTUALLY VISIBLE in the player's scene.\n"
+            f"You are an elite GeoGuessr coach. The player was looking at a Street View scene from {correct_name} and guessed wrong.\n\n"
+            f"Analyse the PLAYER'S SCENE (first image) and teach them specifically what visual clues identify it as {correct_name}.\n\n"
+            "Rules:\n"
+            "- KEY CLUE must be ONE specific visual detail actually visible in the player's scene (soil colour, road markings, vegetation type, pole style, etc)\n"
+            "- Each LESSON must reference something ACTUALLY VISIBLE in the scene\n"
+            "- TRICKY must name a SPECIFIC different region/country that looks similar and explain the visual difference\n"
+            "- Be specific to the exact location, not generic country facts\n\n"
             "Format EXACTLY as:\n"
-            "KEY CLUE: [the single most identifiable visual feature visible in the player's scene]\n"
-            "LESSON 1: [specific clue visible in their scene that proves this location]\n"
-            "LESSON 2: [second teaching point based on what you see in their scene]\n"
-            "LESSON 3: [third teaching point based on what you see in their scene]\n"
-            "TRICKY: [what this location is commonly confused with and why]"
+            "KEY CLUE: [one specific visible detail that is the strongest identifier for this exact location]\n"
+            "LESSON 1: [first visual clue visible in the scene and what it tells you]\n"
+            "LESSON 2: [second visual clue visible in the scene]\n"
+            "LESSON 3: [third visual clue visible in the scene]\n"
+            "TRICKY: [name a specific region like 'Northern Territory' or 'South Australia' that looks similar, and explain the ONE visual difference that separates them]"
         )})
 
         result = call_claude([{"role": "user", "content": content}], max_tokens=350)
