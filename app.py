@@ -86,12 +86,19 @@ def get_r2_client():
     """Get boto3 S3 client pointed at Cloudflare R2."""
     try:
         import boto3
+        from botocore.config import Config
         return boto3.client(
             's3',
             endpoint_url=f'https://{CF_ACCOUNT_ID}.r2.cloudflarestorage.com',
             aws_access_key_id=CF_R2_ACCESS_KEY,
             aws_secret_access_key=CF_R2_SECRET_KEY,
-            region_name='auto'
+            region_name='auto',
+            verify=False,
+            config=Config(
+                retries={'max_attempts': 3, 'mode': 'standard'},
+                connect_timeout=10,
+                read_timeout=30,
+            )
         )
     except Exception as e:
         print("R2 client error:", e)
