@@ -584,21 +584,25 @@ def ai_teaching():
 
     try:
         content = [
+            {"type": "text", "text": f"PLAYER'S SCENE (what they were looking at this round):"},
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
-            {"type": "text", "text": f"This Street View scene is from {correct_name} (player was {distance_km}km off)."}
+            {"type": "text", "text": f"The correct location is {correct_name}."}
         ]
-        # Add up to 3 reference images from cloud library
-        for i, ref_b64 in enumerate(ref_images[:3]):
-            content.append({"type": "text", "text": f"Reference image {i+1} from {correct_name}:"})
-            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ref_b64}})
+        # Add reference images from the correct location
+        if ref_images:
+            content.append({"type": "text", "text": f"REFERENCE IMAGES from {correct_name} (for comparison):"})
+            for i, ref_b64 in enumerate(ref_images[:2]):
+                content.append({"type": "text", "text": f"Reference {i+1}:"})
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ref_b64}})
 
         content.append({"type": "text", "text": (
-            "Compare the player's scene to the reference images and provide a teaching lesson.\n"
+            f"Analyse the PLAYER'S SCENE above and teach them what visual clues identify it as {correct_name}.\n"
+            "Focus on what is ACTUALLY VISIBLE in the player's scene.\n"
             "Format EXACTLY as:\n"
-            "KEY CLUE: [the single most identifiable visual feature the player missed]\n"
-            "LESSON 1: [specific visual clue visible in their scene]\n"
-            "LESSON 2: [second teaching point]\n"
-            "LESSON 3: [third teaching point]\n"
+            "KEY CLUE: [the single most identifiable visual feature visible in the player's scene]\n"
+            "LESSON 1: [specific clue visible in their scene that proves this location]\n"
+            "LESSON 2: [second teaching point based on what you see in their scene]\n"
+            "LESSON 3: [third teaching point based on what you see in their scene]\n"
             "TRICKY: [what this location is commonly confused with and why]"
         )})
 
