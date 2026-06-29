@@ -13,7 +13,7 @@ CORS(app, origins=["*"], supports_credentials=True)
 # ── Config ────────────────────────────────────────────────
 DATABASE_URL       = os.environ.get("DATABASE_URL", "")
 ADMIN_KEY          = os.environ.get("ADMIN_KEY", "")
-FRONTEND_URL       = os.environ.get("FRONTEND_URL", "https://geoanalyzerx.netlify.app")
+FRONTEND_URL       = os.environ.get("FRONTEND_URL", "https://geoanalyzerx.net")
 SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")
 STORAGE_BUCKET     = "scenes"
