@@ -11,14 +11,15 @@ app = Flask(__name__)
 CORS(app, origins=["*"], supports_credentials=True)
 
 # ── Config ────────────────────────────────────────────────
-DATABASE_URL           = os.environ.get("DATABASE_URL", "")
-ADMIN_KEY              = os.environ.get("ADMIN_KEY", "")
-FRONTEND_URL           = os.environ.get("FRONTEND_URL", "https://geoanalyzerx.netlify.app")
-CF_ACCOUNT_ID          = os.environ.get("CF_ACCOUNT_ID", "")
-CF_R2_ACCESS_KEY       = os.environ.get("CF_R2_ACCESS_KEY", "")
-CF_R2_SECRET_KEY       = os.environ.get("CF_R2_SECRET_KEY", "")
-CF_R2_BUCKET           = os.environ.get("CF_R2_BUCKET", "geoanalyzerx-scenes")
-CF_R2_PUBLIC_URL       = os.environ.get("CF_R2_PUBLIC_URL", "")  # optional public bucket URL
+DATABASE_URL       = os.environ.get("DATABASE_URL", "")
+ADMIN_KEY          = os.environ.get("ADMIN_KEY", "")
+FRONTEND_URL       = os.environ.get("FRONTEND_URL", "https://geoanalyzerx.netlify.app")
+SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")
+STORAGE_BUCKET     = "scenes"
+
+print(f"SUPABASE_URL: {'SET' if SUPABASE_URL else 'MISSING'}")
+print(f"SUPABASE_KEY: {'SET' if SUPABASE_KEY else 'MISSING'}")
 
 # ── Stripe ────────────────────────────────────────────────
 import stripe
