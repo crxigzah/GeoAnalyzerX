@@ -346,7 +346,7 @@ def upload_scene():
     if not image_b64 or not country:
         return jsonify({"error": "image and country required"}), 400
 
-    if not CF_R2_ACCESS_KEY:
+    if not SUPABASE_URL:
         return jsonify({"error": "Cloud storage not configured"}), 503
 
     region = classify_region(lat, lng, state)
