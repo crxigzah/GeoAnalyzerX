@@ -559,7 +559,11 @@ def ai_analyse():
         remaining = -1  # unlimited
 
     try:
-        prompt = f"Country hint: {country or 'unknown'}. Analyse this Street View scene."
+        prompt = (
+            f"Country hint: {country or 'unknown'}. Analyse this Street View scene.\n"
+            f"Always identify the SPECIFIC STATE or REGION, not just the country.\n"
+            f"Follow the system prompt format EXACTLY. Output ONLY the 5 lines, no extra text."
+        )
         result = call_claude([{
             "role": "user",
             "content": [
