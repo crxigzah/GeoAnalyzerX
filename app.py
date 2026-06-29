@@ -142,7 +142,6 @@ def classify_region(lat, lng, state):
     """Classify lat/lng into a broad region quadrant."""
     if not lat or not lng:
         return 'central'
-    # Use state centroid for quadrant calculation
     STATE_CENTRES = {
         'victoria': (-37.0, 144.0), 'queensland': (-22.0, 144.0),
         'new south wales': (-32.0, 146.0), 'south australia': (-30.0, 135.0),
@@ -150,9 +149,27 @@ def classify_region(lat, lng, state):
         'tasmania': (-42.0, 146.5),
     }
     centre = STATE_CENTRES.get((state or '').lower(), (-25.0, 133.0))
-    ns = 'north' if lat > centre[0] else 'south'
-    ew = 'east'  if lng > centre[1] else 'west'
+    ns = 'north' if float(lat) > centre[0] else 'south'
+    ew = 'east'  if float(lng) > centre[1] else 'west'
     return f"{ns}{ew}"
+
+def get_aus_state_from_coords(lat, lng):
+    """Get Australian state from coordinates as fallback."""
+    if not lat or not lng: return ''
+    lat, lng = float(lat), float(lng)
+    if lat < -39.5 and lng > 143.5 and lng < 149.5: return 'Tasmania'
+    if lng < 129: return 'Western Australia'
+    if lng >= 129 and lng <= 138 and lat > -25.996: return 'Northern Territory'
+    if lng >= 129 and lng <= 141 and lat <= -25.996: return 'South Australia'
+    if lng > 138 and lat > -29.0 and lng <= 153: return 'Queensland'
+    if lng > 141:
+        if lng < 144 and lat < -34.0: return 'Victoria'
+        if 144 <= lng < 146 and lat < -36.0: return 'Victoria'
+        if 146 <= lng < 148 and lat < -36.1: return 'Victoria'
+        if 148 <= lng < 149 and lat < -37.0: return 'Victoria'
+        if lng >= 149 and lat < -37.5: return 'Victoria'
+        if lat <= -29.0: return 'New South Wales'
+    return ''
 
 # ── Health ────────────────────────────────────────────────
 @app.route("/health")
@@ -723,6 +740,11 @@ def upload_scene():
     state     = (d.get("state") or "").strip()
     lat       = d.get("lat")
     lng       = d.get("lng")
+
+    # If state is missing but we have coords and country is Australia, detect from coords
+    if not state and country == 'Australia' and lat and lng:
+        state = get_aus_state_from_coords(lat, lng)
+        print(f"State from coords: {state}")
     token     = d.get("token", "")  # optional — for contributor tracking
 
     if not image_b64 or not country:
