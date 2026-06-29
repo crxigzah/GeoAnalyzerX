@@ -76,7 +76,14 @@ def init_db():
             user_id INT REFERENCES users(id),
             date DATE DEFAULT CURRENT_DATE,
             analyses INT DEFAULT 0,
+            f7_captures INT DEFAULT 0,
+            teachings INT DEFAULT 0,
             PRIMARY KEY (user_id, date))""")
+        # Add columns if upgrading from old schema
+        try:
+            conn.run("ALTER TABLE usage ADD COLUMN IF NOT EXISTS f7_captures INT DEFAULT 0")
+            conn.run("ALTER TABLE usage ADD COLUMN IF NOT EXISTS teachings INT DEFAULT 0")
+        except: pass
         conn.run("CREATE INDEX IF NOT EXISTS idx_scenes_state ON scenes(state)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_scenes_country_region ON scenes(country, region)")
         conn.close()
@@ -506,24 +513,27 @@ def get_user_from_token(token):
         pass
     return None, None
 
-def check_and_increment_usage(user_id):
+FREE_DAILY_LIMIT = 10
+
+def check_and_increment_usage(user_id, counter='analyses'):
     """Returns (allowed, remaining). Increments counter if allowed."""
     if not user_id:
         return False, 0
     try:
         conn = get_db()
-        rows = conn.run("""SELECT analyses FROM usage
+        rows = conn.run(f"""SELECT {counter} FROM usage
             WHERE user_id=:uid AND date=CURRENT_DATE""", uid=user_id)
         count = rows[0][0] if rows else 0
         if count >= FREE_DAILY_LIMIT:
             conn.close()
             return False, 0
         if rows:
-            conn.run("""UPDATE usage SET analyses=analyses+1
+            conn.run(f"""UPDATE usage SET {counter}={counter}+1
                 WHERE user_id=:uid AND date=CURRENT_DATE""", uid=user_id)
         else:
-            conn.run("""INSERT INTO usage (user_id, analyses)
-                VALUES (:uid, 1)""", uid=user_id)
+            conn.run(f"""INSERT INTO usage (user_id, {counter})
+                VALUES (:uid, 1)
+                ON CONFLICT (user_id, date) DO UPDATE SET {counter}={counter}+1""", uid=user_id)
         conn.close()
         return True, FREE_DAILY_LIMIT - count - 1
     except Exception as e:
@@ -547,16 +557,12 @@ def ai_analyse():
         return jsonify({"error": "Not logged in", "code": "auth"}), 401
 
     if tier != "pro":
-        allowed, remaining = check_and_increment_usage(user_id)
-        if not allowed:
-            return jsonify({
-                "error": "Daily limit reached",
-                "code": "limit",
-                "message": f"You've used all {FREE_DAILY_LIMIT} free analyses for today. Upgrade to Pro for unlimited access, or come back tomorrow.",
-                "remaining": 0
-            }), 429
-    else:
-        remaining = -1  # unlimited
+        # Free users cannot use the Analyse button at all
+        return jsonify({
+            "error": "Pro required",
+            "code": "pro",
+            "message": "The AI Analyse button is a Pro feature. Upgrade to Pro for full AI scene analysis with exact GPS coordinates.",
+        }), 403
 
     try:
         known_location = d.get("known_location", "")
@@ -610,14 +616,14 @@ def ai_teaching():
     if not user_id:
         return jsonify({"error": "Not logged in", "code": "auth"}), 401
 
-    # Teaching counts against the same daily limit as analysis
+    # Teaching counts against teachings limit
     if tier != "pro":
-        allowed, remaining = check_and_increment_usage(user_id)
+        allowed, remaining = check_and_increment_usage(user_id, 'teachings')
         if not allowed:
             return jsonify({
                 "error": "Daily limit reached",
                 "code": "limit",
-                "message": f"You've used all {FREE_DAILY_LIMIT} free analyses for today. Upgrade to Pro for unlimited access, or come back tomorrow.",
+                "message": f"You've used all {FREE_DAILY_LIMIT} free training guides for today. Upgrade to Pro for unlimited access, or come back tomorrow.",
                 "remaining": 0
             }), 429
 
@@ -704,13 +710,23 @@ def ai_usage():
     if not user_id:
         return jsonify({"error": "Not logged in"}), 401
     if tier == "pro":
-        return jsonify({"used": 0, "limit": -1, "remaining": -1, "tier": "pro"})
+        return jsonify({"used": 0, "limit": -1, "remaining": -1, "tier": "pro",
+                        "f7_used": 0, "teachings_used": 0})
     try:
         conn = get_db()
-        rows = conn.run("SELECT analyses FROM usage WHERE user_id=:uid AND date=CURRENT_DATE", uid=user_id)
+        rows = conn.run("""SELECT analyses, f7_captures, teachings FROM usage
+            WHERE user_id=:uid AND date=CURRENT_DATE""", uid=user_id)
         conn.close()
-        used = rows[0][0] if rows else 0
-        return jsonify({"used": used, "limit": FREE_DAILY_LIMIT, "remaining": max(0, FREE_DAILY_LIMIT - used), "tier": tier})
+        analyses  = rows[0][0] if rows else 0
+        f7        = rows[0][1] if rows else 0
+        teachings = rows[0][2] if rows else 0
+        return jsonify({
+            "used": analyses, "limit": FREE_DAILY_LIMIT,
+            "remaining": max(0, FREE_DAILY_LIMIT - analyses),
+            "f7_used": f7, "f7_remaining": max(0, FREE_DAILY_LIMIT - f7),
+            "teachings_used": teachings, "teachings_remaining": max(0, FREE_DAILY_LIMIT - teachings),
+            "tier": tier
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 @app.route("/scenes/validate", methods=["POST", "OPTIONS"])
@@ -763,12 +779,25 @@ def upload_scene():
     state     = (d.get("state") or "").strip()
     lat       = d.get("lat")
     lng       = d.get("lng")
+    token     = d.get("token", "")
+
+    # Check F7 limit for free users
+    if token:
+        user_id, tier = get_user_from_token(token)
+        if user_id and tier != "pro":
+            allowed, remaining = check_and_increment_usage(user_id, 'f7_captures')
+            if not allowed:
+                return jsonify({
+                    "error": "Daily F7 limit reached",
+                    "code": "limit",
+                    "message": f"You've used all {FREE_DAILY_LIMIT} free F7 captures for today. Upgrade to Pro for unlimited captures.",
+                    "uploaded": False
+                }), 429
 
     # If state is missing but we have coords and country is Australia, detect from coords
     if not state and country == 'Australia' and lat and lng:
         state = get_aus_state_from_coords(lat, lng)
         print(f"State from coords: {state}")
-    token     = d.get("token", "")  # optional — for contributor tracking
 
     if not image_b64 or not country:
         return jsonify({"error": "image and country required"}), 400
