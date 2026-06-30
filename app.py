@@ -64,6 +64,7 @@ def init_db():
         try:
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN DEFAULT FALSE")
         except: pass
         conn.run("""CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY, user_id INT REFERENCES users(id),
@@ -221,10 +222,13 @@ def login():
     password = d.get("password","")
     try:
         conn = get_db()
-        rows = conn.run("SELECT id,username,email,tier,banned_until,ban_reason FROM users WHERE email=:e AND password=:p",
+        rows = conn.run("SELECT id,username,email,tier,banned_until,ban_reason,disabled FROM users WHERE email=:e AND password=:p",
                         e=email, p=hp(password))
         if not rows:
             conn.close(); return jsonify({"error":"Invalid email or password"}),401
+        if rows[0][6]:
+            conn.close()
+            return jsonify({"error": "Account disabled", "code": "disabled"}), 403
         banned_until = rows[0][4]
         if banned_until and str(banned_until) != 'None':
             conn.close()
@@ -926,6 +930,26 @@ def scene_count():
         return jsonify({"error": str(e)}), 500
 
 # ── Admin ─────────────────────────────────────────────────
+@app.route("/admin/toggle_disabled", methods=["POST","OPTIONS"])
+def admin_toggle_disabled():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
+        return jsonify({"error":"Forbidden"}),403
+    user_id = d.get("user_id")
+    disabled = d.get("disabled", True)
+    if not user_id:
+        return jsonify({"error":"user_id required"}),400
+    try:
+        conn = get_db()
+        conn.run("UPDATE users SET disabled=:d WHERE id=:uid", d=disabled, uid=user_id)
+        if disabled:
+            conn.run("DELETE FROM sessions WHERE user_id=:uid", uid=user_id)
+        conn.close()
+        return jsonify({"success": True, "disabled": disabled})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/admin/ban_user", methods=["POST","OPTIONS"])
 def admin_ban_user():
     if request.method == "OPTIONS": return jsonify({}), 200
@@ -999,16 +1023,21 @@ def admin_set_tier():
     d = request.json or {}
     if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
         return jsonify({"error":"Forbidden"}),403
-    email = d.get("email","").strip().lower()
-    tier  = d.get("tier","free")
+    user_id = d.get("user_id")
+    email   = d.get("email","").strip().lower()
+    tier    = d.get("tier","free")
     if tier not in ("free","pro","beta"): return jsonify({"error":"Invalid tier"}),400
     try:
         conn = get_db()
-        rows = conn.run("UPDATE users SET tier=:tier WHERE email=:e RETURNING username,email,tier",
-                        tier=tier, e=email)
+        if user_id:
+            rows = conn.run("UPDATE users SET tier=:tier WHERE id=:uid RETURNING username,email,tier",
+                            tier=tier, uid=user_id)
+        else:
+            rows = conn.run("UPDATE users SET tier=:tier WHERE email=:e RETURNING username,email,tier",
+                            tier=tier, e=email)
         conn.close()
         if not rows: return jsonify({"error":"User not found"}),404
-        return jsonify({"updated":{"username":rows[0][0],"email":rows[0][1],"tier":rows[0][2]}})
+        return jsonify({"success": True, "updated":{"username":rows[0][0],"email":rows[0][1],"tier":rows[0][2]}})
     except Exception as e:
         return jsonify({"error":str(e)}),500
 
@@ -1045,12 +1074,12 @@ def admin_users():
         return jsonify({"error":"Forbidden"}),403
     try:
         conn  = get_db()
-        rows  = conn.run("SELECT id,username,email,tier,created_at,last_login,banned_until,ban_reason FROM users ORDER BY created_at DESC")
+        rows  = conn.run("SELECT id,username,email,tier,created_at,last_login,banned_until,ban_reason,disabled FROM users ORDER BY created_at DESC")
         conn.close()
         users = [{"id":r[0],"username":r[1],"email":r[2],"tier":r[3],
                   "created_at":str(r[4]),"last_login":str(r[5]),
                   "banned_until": str(r[6]) if r[6] else None,
-                  "ban_reason": r[7]} for r in rows]
+                  "ban_reason": r[7], "disabled": bool(r[8])} for r in rows]
         return jsonify({"users":users,"count":len(users)})
     except Exception as e:
         return jsonify({"error":str(e)}),500
