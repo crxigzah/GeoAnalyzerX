@@ -141,6 +141,17 @@ def init_db():
             user_message TEXT NOT NULL,
             ai_reply TEXT NOT NULL,
             created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("""CREATE TABLE IF NOT EXISTS activity_logs (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            user_id INT,
+            username TEXT,
+            detail TEXT,
+            ip TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_activity_logs_type ON activity_logs(event_type)")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id)")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_activity_logs_time ON activity_logs(created_at DESC)")
         conn.close()
         print("DB init OK")
     except Exception as e:
@@ -194,6 +205,18 @@ def safe_error(e):
     DB connection info, file paths, or query structure are never exposed."""
     print("Server error:", repr(e))
     return jsonify({"error": "Something went wrong. Please try again."}), 500
+
+def log_event(event_type, user_id=None, username=None, detail=None, ip=None):
+    """Fire-and-forget activity logger. Never raises — a logging failure
+    should never break the actual request."""
+    try:
+        conn = get_db()
+        conn.run("""INSERT INTO activity_logs (event_type, user_id, username, detail, ip)
+            VALUES (:t, :uid, :un, :d, :ip)""",
+            t=event_type, uid=user_id, un=username, d=detail, ip=ip)
+        conn.close()
+    except Exception as le:
+        print("log_event error:", le)
 
 def validate_image_b64(image_b64, max_bytes=8 * 1024 * 1024):
     """Confirms the string is valid base64 that decodes to actual image
@@ -339,6 +362,7 @@ def register():
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
         conn.close()
         send_verification_email(email, username, verify_code)
+        log_event("register", user_id=user["id"], username=username, detail=f"email={email}", ip=client_ip())
         return jsonify({"token":token,"user":user,"needs_verification":True}), 201
     except Exception as e:
         err = str(e)
@@ -371,6 +395,7 @@ def verify_email():
             conn.close(); return jsonify({"error": "Code expired, please request a new one"}), 400
         conn.run("UPDATE users SET email_verified=TRUE, verify_code=NULL WHERE id=:uid", uid=user_id)
         conn.close()
+        log_event("email_verified", user_id=user_id, ip=client_ip())
         return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
@@ -446,8 +471,10 @@ def login():
     totp_code = d.get("totp_code", "").strip()
 
     if rate_limited("login_ip", client_ip(), max_attempts=20, window_seconds=600):
+        log_event("rate_limit_login", detail=f"ip={client_ip()} email={email}", ip=client_ip())
         return jsonify({"error": "Too many login attempts from this network. Try again in a few minutes."}), 429
     if email and rate_limited("login_email", email, max_attempts=8, window_seconds=600):
+        log_event("rate_limit_login", detail=f"email={email}", ip=client_ip())
         return jsonify({"error": "Too many login attempts for this account. Try again in a few minutes."}), 429
 
     try:
@@ -455,7 +482,9 @@ def login():
         rows = conn.run("""SELECT id,username,email,tier,banned_until,ban_reason,disabled,email_verified,
                             password,totp_enabled,totp_secret FROM users WHERE email=:e""", e=email)
         if not rows or not verify_password(rows[0][8], password):
-            conn.close(); return jsonify({"error":"Invalid email or password"}),401
+            conn.close()
+            log_event("login_failed", detail=f"email={email}", ip=client_ip())
+            return jsonify({"error":"Invalid email or password"}),401
         # Transparently upgrade legacy SHA-256 hashes to salted hashes on successful login
         if not rows[0][8].startswith(("scrypt:", "pbkdf2:")):
             conn.run("UPDATE users SET password=:p WHERE id=:uid", p=hash_password(password), uid=rows[0][0])
@@ -487,6 +516,7 @@ def login():
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
         conn.run("UPDATE users SET last_login=NOW() WHERE id=:uid", uid=user["id"])
         conn.close()
+        log_event("login", user_id=user["id"], username=user["username"], detail=f"tier={user['tier']}", ip=client_ip())
         return jsonify({"token":token,"user":user})
     except Exception as e:
         return safe_error(e)
@@ -502,8 +532,11 @@ def logout():
     if not token: return jsonify({"success": True})
     try:
         conn = get_db()
+        rows = conn.run("SELECT user_id FROM sessions WHERE token=:t", t=token)
+        uid = rows[0][0] if rows else None
         conn.run("DELETE FROM sessions WHERE token=:t", t=token)
         conn.close()
+        log_event("logout", user_id=uid, ip=client_ip())
         return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
@@ -557,6 +590,7 @@ def change_password():
         conn.close()
     except Exception as e:
         return safe_error(e)
+    log_event("password_changed", user_id=user_id, ip=client_ip())
     return jsonify({"changed": True})
 
 # ── 2FA ───────────────────────────────────────────────────
@@ -886,6 +920,7 @@ def ai_analyse():
                 {"type": "text", "text": prompt}
             ]
         }], system=SYSTEM_PROMPT, max_tokens=400)
+        log_event("ai_analyse", user_id=user_id, detail=f"country={country}", ip=client_ip())
         return jsonify({"result": result, "tier": tier})
     except Exception as e:
         return safe_error(e)
@@ -961,6 +996,7 @@ def ai_teaching():
         )})
 
         result = call_claude([{"role": "user", "content": content}], max_tokens=350)
+        log_event("teaching_guide", user_id=user_id, detail=f"location={correct_name}", ip=client_ip())
         return jsonify({"teaching": result})
     except Exception as e:
         return safe_error(e)
@@ -1193,6 +1229,7 @@ def upload_scene():
     except Exception as e:
         return safe_error(e)
 
+    log_event("scene_upload", user_id=user_id, detail=f"country={country} state={state} region={region}", ip=client_ip())
     return jsonify({"uploaded": True, "region": region, "key": r2_key})
 
 MAPILLARY_TOKEN = os.environ.get("MAPILLARY_ACCESS_TOKEN", "")
@@ -1430,6 +1467,7 @@ def admin_toggle_disabled():
         if disabled:
             conn.run("DELETE FROM sessions WHERE user_id=:uid", uid=user_id)
         conn.close()
+        log_event("admin_disable" if disabled else "admin_enable", user_id=user_id, ip=client_ip())
         return jsonify({"success": True, "disabled": disabled})
     except Exception as e:
         return safe_error(e)
@@ -1460,6 +1498,7 @@ def admin_ban_user():
             # Also kill their active sessions immediately
             conn.run("DELETE FROM sessions WHERE user_id=:uid", uid=user_id)
         conn.close()
+        log_event("admin_unban" if duration == "unban" else "admin_ban", user_id=user_id, detail=f"duration={duration} reason={reason}", ip=client_ip())
         return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
@@ -1479,6 +1518,7 @@ def admin_delete_user():
         conn.run("DELETE FROM sessions WHERE user_id=:uid", uid=user_id)
         conn.run("DELETE FROM users WHERE id=:uid", uid=user_id)
         conn.close()
+        log_event("admin_delete_user", user_id=user_id, ip=client_ip())
         return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
@@ -1497,6 +1537,7 @@ def admin_reset_usage():
         else:
             conn.run("DELETE FROM usage WHERE date=CURRENT_DATE")
         conn.close()
+        log_event("admin_reset_usage", user_id=user_id, ip=client_ip())
         return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
@@ -1521,6 +1562,7 @@ def admin_set_tier():
                             tier=tier, e=email)
         conn.close()
         if not rows: return jsonify({"error":"User not found"}),404
+        log_event("admin_set_tier", user_id=user_id, detail=f"tier={tier} username={rows[0][0]}", ip=client_ip())
         return jsonify({"success": True, "updated":{"username":rows[0][0],"email":rows[0][1],"tier":rows[0][2]}})
     except Exception as e:
         return safe_error(e)
@@ -1566,6 +1608,29 @@ def admin_users():
                   "ban_reason": r[7], "disabled": bool(r[8]),
                   "is_admin": bool(r[9]), "email_verified": bool(r[10])} for r in rows]
         return jsonify({"users":users,"count":len(users)})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/activity_logs", methods=["GET","OPTIONS"])
+def admin_activity_logs():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    limit     = min(int(request.args.get("limit", 200)), 1000)
+    event_type = request.args.get("type", "")
+    try:
+        conn = get_db()
+        if event_type:
+            rows = conn.run("""SELECT event_type, user_id, username, detail, ip, created_at
+                FROM activity_logs WHERE event_type=:t
+                ORDER BY created_at DESC LIMIT :limit""", t=event_type, limit=limit)
+        else:
+            rows = conn.run("""SELECT event_type, user_id, username, detail, ip, created_at
+                FROM activity_logs ORDER BY created_at DESC LIMIT :limit""", limit=limit)
+        conn.close()
+        logs = [{"event_type": r[0], "user_id": r[1], "username": r[2],
+                 "detail": r[3], "ip": r[4], "created_at": str(r[5])} for r in rows]
+        return jsonify({"logs": logs, "count": len(logs)})
     except Exception as e:
         return safe_error(e)
 
