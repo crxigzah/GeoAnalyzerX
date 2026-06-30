@@ -175,6 +175,13 @@ def client_ip():
         return fwd.split(",")[0].strip()
     return request.remote_addr or "unknown"
 
+def safe_error(e):
+    """Logs the full exception server-side (visible in Render logs) but
+    returns only a generic message to the client, so internal details like
+    DB connection info, file paths, or query structure are never exposed."""
+    print("Server error:", repr(e))
+    return jsonify({"error": "Something went wrong. Please try again."}), 500
+
 # ── R2 / S3 helpers ───────────────────────────────────────
 SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")  # service role key
@@ -276,6 +283,9 @@ def register():
     if rate_limited("register_ip", client_ip(), max_attempts=10, window_seconds=3600):
         return jsonify({"error": "Too many accounts created from this network. Try again later."}), 429
     if len(username)<3: return jsonify({"error":"Username must be at least 3 characters"}),400
+    if len(username)>32: return jsonify({"error":"Username must be 32 characters or fewer"}),400
+    if not re.match(r'^[A-Za-z0-9_]+$', username):
+        return jsonify({"error":"Username can only contain letters, numbers, and underscores"}),400
     if "@" not in email: return jsonify({"error":"Invalid email"}),400
     if len(password)<6: return jsonify({"error":"Password must be at least 6 characters"}),400
     try:
@@ -295,7 +305,7 @@ def register():
     except Exception as e:
         err = str(e)
         if "unique" in err.lower(): return jsonify({"error":"Username or email already taken"}),409
-        return jsonify({"error": err}), 500
+        return safe_error(e)
 
 @app.route("/auth/verify_email", methods=["POST", "OPTIONS"])
 def verify_email():
@@ -325,7 +335,7 @@ def verify_email():
         conn.close()
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/auth/resend_code", methods=["POST", "OPTIONS"])
 def resend_code():
@@ -352,7 +362,7 @@ def resend_code():
         send_verification_email(email, username, new_code)
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/auth/login", methods=["POST", "OPTIONS"])
 def login():
@@ -406,7 +416,7 @@ def login():
         conn.close()
         return jsonify({"token":token,"user":user})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/auth/verify", methods=["POST", "OPTIONS"])
 def verify():
@@ -430,7 +440,8 @@ def verify():
         user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4]),"email_verified":bool(rows[0][7])}
         return jsonify({"valid":True,"user":user})
     except Exception as e:
-        return jsonify({"valid":False,"error":str(e)}),500
+        print("Server error:", repr(e))
+        return jsonify({"valid":False,"error":"Something went wrong. Please try again."}),500
 
 @app.route("/auth/change-password", methods=["POST", "OPTIONS"])
 def change_password():
@@ -447,7 +458,7 @@ def change_password():
         if not rows: return jsonify({"error": "Invalid token"}), 401
         user_id, pwd_hash = rows[0][0], rows[0][1]
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
     if not verify_password(pwd_hash, current):
         return jsonify({"error": "Current password is incorrect"}), 400
     try:
@@ -455,7 +466,7 @@ def change_password():
         conn.run("UPDATE users SET password=:p WHERE id=:uid", p=hash_password(new_pwd), uid=user_id)
         conn.close()
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
     return jsonify({"changed": True})
 
 # ── 2FA ───────────────────────────────────────────────────
@@ -472,7 +483,7 @@ def setup_2fa():
         if not rows: return jsonify({"error": "Invalid token"}), 401
         user_id, email, username = rows[0][0], rows[0][1], rows[0][2]
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
     secret = pyotp.random_base32()
     totp   = pyotp.TOTP(secret)
     uri    = totp.provisioning_uri(name=email, issuer_name="GeoAnalyzerX")
@@ -488,7 +499,7 @@ def setup_2fa():
         conn.run("UPDATE users SET totp_secret_pending=:s WHERE id=:uid", s=secret, uid=user_id)
         conn.close()
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
     return jsonify({"secret": secret, "qr": qr_b64})
 
 @app.route("/auth/2fa/verify", methods=["POST", "OPTIONS"])
@@ -505,7 +516,7 @@ def verify_2fa_setup():
         if not rows: return jsonify({"error": "Invalid token"}), 401
         user_id, pending = rows[0][0], rows[0][1]
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
     if not pending: return jsonify({"error": "No pending 2FA setup"}), 400
     if not pyotp.TOTP(pending).verify(code, valid_window=1):
         return jsonify({"error": "Incorrect code — try again"}), 400
@@ -515,7 +526,7 @@ def verify_2fa_setup():
                  s=pending, uid=user_id)
         conn.close()
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
     return jsonify({"enabled": True})
 
 @app.route("/auth/2fa/disable", methods=["POST", "OPTIONS"])
@@ -532,7 +543,7 @@ def disable_2fa():
         if not rows: return jsonify({"error": "Invalid token"}), 401
         user_id, secret = rows[0][0], rows[0][1]
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
     if not secret: return jsonify({"error": "2FA not enabled"}), 400
     if not pyotp.TOTP(secret).verify(code, valid_window=1):
         return jsonify({"error": "Incorrect code"}), 400
@@ -541,7 +552,7 @@ def disable_2fa():
         conn.run("UPDATE users SET totp_secret=NULL, totp_enabled=FALSE WHERE id=:uid", uid=user_id)
         conn.close()
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
     return jsonify({"disabled": True})
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -784,7 +795,7 @@ def ai_analyse():
         }], system=SYSTEM_PROMPT, max_tokens=400)
         return jsonify({"result": result, "tier": tier})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/ai/teaching", methods=["POST", "OPTIONS"])
 def ai_teaching():
@@ -856,7 +867,7 @@ def ai_teaching():
         result = call_claude([{"role": "user", "content": content}], max_tokens=350)
         return jsonify({"teaching": result})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/ai/chat", methods=["POST", "OPTIONS"])
 def ai_chat():
@@ -892,7 +903,7 @@ def ai_chat():
         }], system=system, max_tokens=200)
         return jsonify({"reply": result})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/ai/usage", methods=["POST", "OPTIONS"])
 def ai_usage():
@@ -921,7 +932,7 @@ def ai_usage():
             "tier": tier
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 @app.route("/scenes/validate", methods=["POST", "OPTIONS"])
 def validate_scene():
     """Use Claude to check if image is a genuine Street View scene."""
@@ -1032,7 +1043,7 @@ def upload_scene():
             lat=lat, lng=lng, key=r2_key, cid=contributor_id)
         conn.close()
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
     return jsonify({"uploaded": True, "region": region, "key": r2_key})
 
@@ -1080,7 +1091,7 @@ def get_refs():
                 conn.run("UPDATE scenes SET times_used = times_used + 1 WHERE r2_key = :k", k=key)
         conn.close()
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
     if not rows:
         return jsonify({"images": [], "count": 0})
@@ -1103,7 +1114,7 @@ def scene_count():
         conn.close()
         return jsonify({"counts": [{"state": r[0], "count": r[1]} for r in rows]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 # ── Admin ─────────────────────────────────────────────────
 def require_admin():
@@ -1125,7 +1136,8 @@ def require_admin():
             WHERE s.token=:t AND s.expires_at>NOW()""", t=admin_token)
         conn.close()
     except Exception as e:
-        return False, (jsonify({"error": str(e)}), 500)
+        print("Server error:", repr(e))
+        return False, (jsonify({"error": "Something went wrong"}), 500)
     if not rows or not rows[0][0]:
         return False, (jsonify({"error":"Account is not an admin"}), 403)
     return True, None
@@ -1162,7 +1174,7 @@ def admin_login():
         conn.close()
         return jsonify({"admin_token": token, "username": rows[0][1], "email": rows[0][2]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/admin/toggle_disabled", methods=["POST","OPTIONS"])
 def admin_toggle_disabled():
@@ -1182,7 +1194,7 @@ def admin_toggle_disabled():
         conn.close()
         return jsonify({"success": True, "disabled": disabled})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/admin/ban_user", methods=["POST","OPTIONS"])
 def admin_ban_user():
@@ -1212,7 +1224,7 @@ def admin_ban_user():
         conn.close()
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/admin/delete_user", methods=["POST","OPTIONS"])
 def admin_delete_user():
@@ -1231,7 +1243,7 @@ def admin_delete_user():
         conn.close()
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/admin/reset_usage", methods=["POST","OPTIONS"])
 def admin_reset_usage():
@@ -1249,7 +1261,7 @@ def admin_reset_usage():
         conn.close()
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/admin/set_tier", methods=["POST","OPTIONS"])
 def admin_set_tier():
@@ -1273,7 +1285,7 @@ def admin_set_tier():
         if not rows: return jsonify({"error":"User not found"}),404
         return jsonify({"success": True, "updated":{"username":rows[0][0],"email":rows[0][1],"tier":rows[0][2]}})
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        return safe_error(e)
 
 @app.route("/admin/stats", methods=["GET","OPTIONS"])
 def admin_stats():
@@ -1299,7 +1311,7 @@ def admin_stats():
             "usage_today": [{"username":r[0],"tier":r[1],"f7":r[2],"guides":r[3],"analyses":r[4]} for r in usage_today]
         })
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        return safe_error(e)
 
 @app.route("/admin/users", methods=["GET","OPTIONS"])
 def admin_users():
@@ -1317,7 +1329,7 @@ def admin_users():
                   "is_admin": bool(r[9]), "email_verified": bool(r[10])} for r in rows]
         return jsonify({"users":users,"count":len(users)})
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        return safe_error(e)
 
 @app.route("/admin/set_admin", methods=["POST","OPTIONS"])
 def admin_set_admin():
@@ -1344,7 +1356,7 @@ def admin_set_admin():
         if not rows: return jsonify({"error":"User not found"}),404
         return jsonify({"success": True, "updated":{"username":rows[0][0],"email":rows[0][1],"is_admin":bool(rows[0][2])}})
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        return safe_error(e)
 
 @app.route("/admin/resend_verification", methods=["POST","OPTIONS"])
 def admin_resend_verification():
@@ -1370,7 +1382,7 @@ def admin_resend_verification():
         send_verification_email(email, username, new_code)
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"error":str(e)}),500
+        return safe_error(e)
 
 # ── Stripe ────────────────────────────────────────────────
 @app.route("/stripe/create-checkout", methods=["POST", "OPTIONS"])
@@ -1389,7 +1401,7 @@ def create_checkout():
         if not rows: return jsonify({"error": "Invalid token"}), 401
         user_id, email, username = rows[0][0], rows[0][1], rows[0][2]
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
     if not STRIPE_PRO_PRICE_ID:
         return jsonify({"error": "not configured"}), 503
     try:
@@ -1407,7 +1419,7 @@ def create_checkout():
     except stripe.error.AuthenticationError:
         return jsonify({"error": "Stripe authentication failed — check STRIPE_SECRET_KEY"}), 503
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return safe_error(e)
 
 @app.route("/stripe/webhook", methods=["POST"])
 def stripe_webhook():
@@ -1416,7 +1428,8 @@ def stripe_webhook():
     try:
         event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        print("Stripe webhook signature error:", repr(e))
+        return jsonify({"error": "Invalid signature"}), 400
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
         user_id = session.get("metadata", {}).get("user_id")
