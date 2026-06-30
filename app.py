@@ -364,6 +364,41 @@ def resend_code():
     except Exception as e:
         return safe_error(e)
 
+@app.route("/auth/request_verification", methods=["POST", "OPTIONS"])
+def request_verification():
+    """For accounts that registered but never verified, and are now stuck
+    unable to log in with no way back into the code-entry screen. Re-checks
+    email+password, then issues a fresh session token (same shape as
+    register()'s) and a new code, so the frontend can route them back into
+    the verify-code UI without fully logging them in."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    email    = d.get("email","").strip().lower()
+    password = d.get("password","")
+    if rate_limited("request_verification_ip", client_ip(), max_attempts=10, window_seconds=600):
+        return jsonify({"error": "Too many attempts. Try again later."}), 429
+    if email and rate_limited("request_verification_email", email, max_attempts=5, window_seconds=600):
+        return jsonify({"error": "Too many attempts for this account. Try again later."}), 429
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT id,username,email,tier,password,email_verified FROM users WHERE email=:e", e=email)
+        if not rows or not verify_password(rows[0][4], password):
+            conn.close(); return jsonify({"error":"Invalid email or password"}),401
+        user_id, username, email, tier, _, verified = rows[0]
+        if verified:
+            conn.close(); return jsonify({"error":"This account is already verified. Try signing in normally."}), 400
+        new_code = str(secrets.randbelow(900000) + 100000)
+        conn.run("UPDATE users SET verify_code=:c, verify_expires=NOW() + INTERVAL '15 minutes' WHERE id=:uid",
+                  c=new_code, uid=user_id)
+        token = secrets.token_urlsafe(32)
+        conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user_id)
+        conn.close()
+        send_verification_email(email, username, new_code)
+        user = {"id": user_id, "username": username, "email": email, "tier": tier}
+        return jsonify({"token": token, "user": user, "needs_verification": True})
+    except Exception as e:
+        return safe_error(e)
+
 @app.route("/auth/login", methods=["POST", "OPTIONS"])
 def login():
     if request.method == "OPTIONS": return jsonify({}), 200
