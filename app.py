@@ -906,6 +906,24 @@ def scene_count():
         return jsonify({"error": str(e)}), 500
 
 # ── Admin ─────────────────────────────────────────────────
+@app.route("/admin/reset_usage", methods=["POST","OPTIONS"])
+def admin_reset_usage():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
+        return jsonify({"error":"Forbidden"}),403
+    user_id = d.get("user_id")
+    try:
+        conn = get_db()
+        if user_id:
+            conn.run("DELETE FROM usage WHERE user_id=:uid AND date=CURRENT_DATE", uid=user_id)
+        else:
+            conn.run("DELETE FROM usage WHERE date=CURRENT_DATE")
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/admin/set_tier", methods=["POST","OPTIONS"])
 def admin_set_tier():
     if request.method == "OPTIONS": return jsonify({}), 200
@@ -922,6 +940,32 @@ def admin_set_tier():
         conn.close()
         if not rows: return jsonify({"error":"User not found"}),404
         return jsonify({"updated":{"username":rows[0][0],"email":rows[0][1],"tier":rows[0][2]}})
+    except Exception as e:
+        return jsonify({"error":str(e)}),500
+
+@app.route("/admin/stats", methods=["GET","OPTIONS"])
+def admin_stats():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    if not ADMIN_KEY or request.args.get("admin_key") != ADMIN_KEY:
+        return jsonify({"error":"Forbidden"}),403
+    try:
+        conn = get_db()
+        users     = conn.run("SELECT COUNT(*) FROM users")[0][0]
+        pro_users = conn.run("SELECT COUNT(*) FROM users WHERE tier='pro'")[0][0]
+        free_users= conn.run("SELECT COUNT(*) FROM users WHERE tier='free'")[0][0]
+        scenes    = conn.run("SELECT COUNT(*) FROM scenes")[0][0]
+        new_today = conn.run("SELECT COUNT(*) FROM users WHERE created_at::date = CURRENT_DATE")[0][0]
+        usage_today = conn.run("""
+            SELECT u.username, u.tier, us.f7_captures, us.teachings, us.analyses
+            FROM usage us JOIN users u ON u.id = us.user_id
+            WHERE us.date = CURRENT_DATE ORDER BY us.teachings DESC""")
+        conn.close()
+        return jsonify({
+            "total_users": users, "pro_users": pro_users,
+            "free_users": free_users, "scenes": scenes,
+            "new_today": new_today,
+            "usage_today": [{"username":r[0],"tier":r[1],"f7":r[2],"guides":r[3],"analyses":r[4]} for r in usage_today]
+        })
     except Exception as e:
         return jsonify({"error":str(e)}),500
 
