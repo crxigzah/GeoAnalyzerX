@@ -1262,10 +1262,12 @@ def get_refs():
                 ((haversine_km(lat, lng, r[3], r[4]), r) for r in candidates),
                 key=lambda x: x[0]
             )
-            # Only trust "nearby" matches within 150km — beyond that we'd
-            # rather fall through to a broader match or Mapillary than show
-            # something from the far side of a huge state/country.
-            nearby = [r for dist, r in scored if dist <= 150][:limit]
+            # Only trust "nearby" matches within 300km — beyond that fall
+            # through to a broader match or Mapillary. 300km is generous
+            # but needed for large states like SA/WA/QLD where community
+            # uploads near the round's actual location can still be hundreds
+            # of km from where the player guessed.
+            nearby = [r for dist, r in scored if dist <= 300][:limit]
             rows = [(r[0], r[1], r[2]) for r in nearby]
 
         # 2. Fall back to the original broad state/region/country match if
