@@ -61,6 +61,10 @@ def init_db():
             tier TEXT DEFAULT 'free', totp_secret TEXT,
             totp_secret_pending TEXT, totp_enabled BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT NOW(), last_login TIMESTAMPTZ)""")
+        try:
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT")
+        except: pass
         conn.run("""CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY, user_id INT REFERENCES users(id),
             created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -217,10 +221,19 @@ def login():
     password = d.get("password","")
     try:
         conn = get_db()
-        rows = conn.run("SELECT id,username,email,tier FROM users WHERE email=:e AND password=:p",
+        rows = conn.run("SELECT id,username,email,tier,banned_until,ban_reason FROM users WHERE email=:e AND password=:p",
                         e=email, p=hp(password))
         if not rows:
             conn.close(); return jsonify({"error":"Invalid email or password"}),401
+        banned_until = rows[0][4]
+        if banned_until and str(banned_until) != 'None':
+            conn.close()
+            return jsonify({
+                "error": "Account banned",
+                "code": "banned",
+                "banned_until": str(banned_until),
+                "ban_reason": rows[0][5] or "Violation of terms of service"
+            }), 403
         user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3]}
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
@@ -237,11 +250,18 @@ def verify():
     if not token: return jsonify({"valid":False}),401
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at FROM users u
+        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,u.banned_until,u.ban_reason FROM users u
             JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
         conn.close()
         if not rows: return jsonify({"valid":False}),401
+        banned_until = rows[0][5]
+        if banned_until and str(banned_until) != 'None':
+            return jsonify({
+                "valid": False, "code": "banned",
+                "banned_until": str(banned_until),
+                "ban_reason": rows[0][6] or "Violation of terms of service"
+            }), 403
         user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4])}
         return jsonify({"valid":True,"user":user})
     except Exception as e:
@@ -906,6 +926,55 @@ def scene_count():
         return jsonify({"error": str(e)}), 500
 
 # ── Admin ─────────────────────────────────────────────────
+@app.route("/admin/ban_user", methods=["POST","OPTIONS"])
+def admin_ban_user():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
+        return jsonify({"error":"Forbidden"}),403
+    user_id = d.get("user_id")
+    duration = d.get("duration")  # '1d','3d','1w','1m','permanent','unban'
+    reason = d.get("reason", "")
+    if not user_id:
+        return jsonify({"error":"user_id required"}),400
+    try:
+        conn = get_db()
+        if duration == "unban":
+            conn.run("UPDATE users SET banned_until=NULL, ban_reason=NULL WHERE id=:uid", uid=user_id)
+        else:
+            interval_map = {
+                "1d": "1 day", "3d": "3 days", "1w": "7 days",
+                "1m": "30 days", "permanent": "100 years"
+            }
+            interval = interval_map.get(duration, "1 day")
+            conn.run(f"""UPDATE users SET banned_until=NOW() + INTERVAL '{interval}', ban_reason=:reason
+                WHERE id=:uid""", uid=user_id, reason=reason)
+            # Also kill their active sessions immediately
+            conn.run("DELETE FROM sessions WHERE user_id=:uid", uid=user_id)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/delete_user", methods=["POST","OPTIONS"])
+def admin_delete_user():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
+        return jsonify({"error":"Forbidden"}),403
+    user_id = d.get("user_id")
+    if not user_id:
+        return jsonify({"error":"user_id required"}),400
+    try:
+        conn = get_db()
+        conn.run("DELETE FROM usage WHERE user_id=:uid", uid=user_id)
+        conn.run("DELETE FROM sessions WHERE user_id=:uid", uid=user_id)
+        conn.run("DELETE FROM users WHERE id=:uid", uid=user_id)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/admin/reset_usage", methods=["POST","OPTIONS"])
 def admin_reset_usage():
     if request.method == "OPTIONS": return jsonify({}), 200
@@ -976,10 +1045,12 @@ def admin_users():
         return jsonify({"error":"Forbidden"}),403
     try:
         conn  = get_db()
-        rows  = conn.run("SELECT id,username,email,tier,created_at,last_login FROM users ORDER BY created_at DESC")
+        rows  = conn.run("SELECT id,username,email,tier,created_at,last_login,banned_until,ban_reason FROM users ORDER BY created_at DESC")
         conn.close()
         users = [{"id":r[0],"username":r[1],"email":r[2],"tier":r[3],
-                  "created_at":str(r[4]),"last_login":str(r[5])} for r in rows]
+                  "created_at":str(r[4]),"last_login":str(r[5]),
+                  "banned_until": str(r[6]) if r[6] else None,
+                  "ban_reason": r[7]} for r in rows]
         return jsonify({"users":users,"count":len(users)})
     except Exception as e:
         return jsonify({"error":str(e)}),500
