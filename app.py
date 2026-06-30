@@ -9,6 +9,10 @@ import pg8000.native
 from urllib.parse import urlparse
 
 app = Flask(__name__)
+# Caps total request body size (generous for a base64-encoded screenshot,
+# but blocks someone sending an enormous payload to waste server resources,
+# inflate Supabase storage costs, or rack up Claude API costs).
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10 MB
 CORS(app, origins=[
     "https://geoanalyzerx.net",
     "https://www.geoanalyzerx.net",
@@ -182,6 +186,27 @@ def safe_error(e):
     print("Server error:", repr(e))
     return jsonify({"error": "Something went wrong. Please try again."}), 500
 
+def validate_image_b64(image_b64, max_bytes=8 * 1024 * 1024):
+    """Confirms the string is valid base64 that decodes to actual image
+    bytes (checked via magic-byte signatures for JPEG/PNG/WEBP) and is
+    within a sane size limit. Returns (ok, error_message)."""
+    if not image_b64:
+        return False, "No image provided"
+    try:
+        raw = base64.b64decode(image_b64, validate=True)
+    except Exception:
+        return False, "Invalid image data"
+    if len(raw) > max_bytes:
+        return False, "Image too large"
+    if len(raw) < 100:
+        return False, "Invalid image data"
+    is_jpeg = raw[:3] == b'\xff\xd8\xff'
+    is_png  = raw[:8] == b'\x89PNG\r\n\x1a\n'
+    is_webp = raw[:4] == b'RIFF' and raw[8:12] == b'WEBP'
+    if not (is_jpeg or is_png or is_webp):
+        return False, "File must be a JPEG, PNG, or WEBP image"
+    return True, None
+
 # ── R2 / S3 helpers ───────────────────────────────────────
 SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")  # service role key
@@ -268,6 +293,10 @@ def get_aus_state_from_coords(lat, lng):
     return ''
 
 # ── Health ────────────────────────────────────────────────
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({"error": "Upload too large. Please use a smaller image."}), 413
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "version": "2.0.0"})
@@ -450,6 +479,23 @@ def login():
         conn.run("UPDATE users SET last_login=NOW() WHERE id=:uid", uid=user["id"])
         conn.close()
         return jsonify({"token":token,"user":user})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/auth/logout", methods=["POST", "OPTIONS"])
+def logout():
+    """Revokes the session token server-side. Previously sign-out only
+    cleared the token locally, leaving the session valid for up to 30
+    days even after the user 'logged out' — so a stolen/leaked token
+    kept working regardless."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    token = (request.json or {}).get("token","")
+    if not token: return jsonify({"success": True})
+    try:
+        conn = get_db()
+        conn.run("DELETE FROM sessions WHERE token=:t", t=token)
+        conn.close()
+        return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
 
@@ -781,6 +827,9 @@ def ai_analyse():
 
     if not image_b64:
         return jsonify({"error": "No image provided"}), 400
+    img_ok, img_err = validate_image_b64(image_b64)
+    if not img_ok:
+        return jsonify({"error": img_err}), 400
 
     user_id, tier = get_user_from_token(token)
     if not user_id:
@@ -844,6 +893,9 @@ def ai_teaching():
 
     if not image_b64:
         return jsonify({"error": "No image"}), 400
+    img_ok, img_err = validate_image_b64(image_b64)
+    if not img_ok:
+        return jsonify({"error": img_err}), 400
 
     user_id, tier = get_user_from_token(token)
     if not user_id:
@@ -976,6 +1028,9 @@ def validate_scene():
     image_b64 = (request.json or {}).get("image", "")
     if not image_b64:
         return jsonify({"valid": False, "reason": "no image"}), 400
+    img_ok, img_err = validate_image_b64(image_b64)
+    if not img_ok:
+        return jsonify({"valid": False, "reason": img_err}), 400
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not anthropic_key:
         # No key configured — allow upload (fail open)
@@ -1046,6 +1101,9 @@ def upload_scene():
 
     if not image_b64 or not country:
         return jsonify({"error": "image and country required"}), 400
+    img_ok, img_err = validate_image_b64(image_b64)
+    if not img_ok:
+        return jsonify({"error": img_err}), 400
 
     if not SUPABASE_URL:
         return jsonify({"error": "Cloud storage not configured"}), 503
