@@ -4,7 +4,7 @@ GeoAnalyzerX Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-import hashlib, os, secrets, uuid, base64, io, time, threading, re
+import hashlib, os, secrets, uuid, base64, io, time, threading, re, math
 import pg8000.native
 from urllib.parse import urlparse
 
@@ -1160,14 +1160,62 @@ def upload_scene():
 
     return jsonify({"uploaded": True, "region": region, "key": r2_key})
 
+MAPILLARY_TOKEN = os.environ.get("MAPILLARY_ACCESS_TOKEN", "")
+
+def fetch_mapillary_image(lat, lng, radius_m=2000):
+    """Fetches a real street-level photo near the given coordinates from
+    Mapillary's free, worldwide crowdsourced imagery API. Used as a fallback
+    when there's no community-uploaded scene near a guess location yet —
+    means a 'where you guessed' photo can be genuinely accurate (showing
+    Sydney for a Sydney guess) instead of misleadingly using whatever
+    same-state photo happens to exist in the community library, or showing
+    nothing at all. Fails silently (returns None) if no token is configured
+    or nothing is found nearby, so this never blocks the rest of the
+    teaching guide from working."""
+    if not MAPILLARY_TOKEN or lat is None or lng is None:
+        return None
+    try:
+        import requests as req
+        resp = req.get(
+            "https://graph.mapillary.com/images",
+            params={
+                "access_token": MAPILLARY_TOKEN,
+                "fields": "thumb_1024_url",
+                "closeto": f"{lng},{lat}",
+                "radius": radius_m,
+                "limit": 1
+            },
+            timeout=8
+        )
+        data = resp.json().get("data", [])
+        if not data:
+            return None
+        img_url = data[0].get("thumb_1024_url")
+        if not img_url:
+            return None
+        img_resp = req.get(img_url, timeout=10)
+        if img_resp.status_code != 200:
+            return None
+        return base64.b64encode(img_resp.content).decode()
+    except Exception as e:
+        print("Mapillary fetch error:", e)
+        return None
+
 @app.route("/scenes/refs", methods=["POST", "OPTIONS"])
 def get_refs():
-    """Get up to N reference scene images for a given state/country."""
+    """Get up to N reference scene images for a given location. Prefers
+    community-uploaded scenes near the given lat/lng (genuinely close, not
+    just 'somewhere in the same state'); falls back to a broader state/
+    country match if nothing nearby exists; falls back to a real Mapillary
+    street-level photo near the exact coordinates if the community library
+    has nothing useful for this area at all."""
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
     state   = (d.get("state") or "").strip()
     country = (d.get("country") or "").strip()
     region  = (d.get("region") or "").strip()
+    lat     = d.get("lat")
+    lng     = d.get("lng")
     limit   = min(int(d.get("limit", 5)), 8)
 
     if not state and not country:
@@ -1175,27 +1223,63 @@ def get_refs():
 
     try:
         conn = get_db()
-        if state and region:
-            rows = conn.run("""
-                SELECT r2_key, region, quality_score FROM scenes
-                WHERE state ILIKE :state
-                ORDER BY (region = :region) DESC, quality_score DESC, uploaded_at DESC
-                LIMIT :limit""",
-                state=state, region=region, limit=limit)
-        elif state:
-            rows = conn.run("""
-                SELECT r2_key, region, quality_score FROM scenes
-                WHERE state ILIKE :state
-                ORDER BY quality_score DESC, uploaded_at DESC
-                LIMIT :limit""",
-                state=state, limit=limit)
-        else:
-            rows = conn.run("""
-                SELECT r2_key, region, quality_score FROM scenes
-                WHERE country ILIKE :country
-                ORDER BY quality_score DESC, uploaded_at DESC
-                LIMIT :limit""",
-                country=country, limit=limit)
+        rows = []
+
+        # 1. Try proximity match first, if we have coordinates to work with —
+        # pull a generous candidate pool scoped to the right state/country,
+        # then rank by actual distance in Python (avoids needing a Postgres
+        # geo extension for a feature at this scale).
+        if lat is not None and lng is not None:
+            scope_clause = "state ILIKE :state" if state else "country ILIKE :country"
+            scope_val = state if state else country
+            candidates = conn.run(f"""
+                SELECT r2_key, region, quality_score, lat, lng FROM scenes
+                WHERE {scope_clause} AND lat IS NOT NULL AND lng IS NOT NULL
+                ORDER BY uploaded_at DESC LIMIT 200""",
+                **{("state" if state else "country"): scope_val})
+
+            def haversine_km(lat1, lng1, lat2, lng2):
+                R = 6371
+                p1, p2 = math.radians(lat1), math.radians(lat2)
+                dphi = math.radians(lat2 - lat1)
+                dlmb = math.radians(lng2 - lng1)
+                a = math.sin(dphi/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dlmb/2)**2
+                return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+            scored = sorted(
+                ((haversine_km(lat, lng, r[3], r[4]), r) for r in candidates),
+                key=lambda x: x[0]
+            )
+            # Only trust "nearby" matches within 150km — beyond that we'd
+            # rather fall through to a broader match or Mapillary than show
+            # something from the far side of a huge state/country.
+            nearby = [r for dist, r in scored if dist <= 150][:limit]
+            rows = [(r[0], r[1], r[2]) for r in nearby]
+
+        # 2. Fall back to the original broad state/region/country match if
+        # no nearby community scene was found.
+        if not rows:
+            if state and region:
+                rows = conn.run("""
+                    SELECT r2_key, region, quality_score FROM scenes
+                    WHERE state ILIKE :state
+                    ORDER BY (region = :region) DESC, quality_score DESC, uploaded_at DESC
+                    LIMIT :limit""",
+                    state=state, region=region, limit=limit)
+            elif state:
+                rows = conn.run("""
+                    SELECT r2_key, region, quality_score FROM scenes
+                    WHERE state ILIKE :state
+                    ORDER BY quality_score DESC, uploaded_at DESC
+                    LIMIT :limit""",
+                    state=state, limit=limit)
+            else:
+                rows = conn.run("""
+                    SELECT r2_key, region, quality_score FROM scenes
+                    WHERE country ILIKE :country
+                    ORDER BY quality_score DESC, uploaded_at DESC
+                    LIMIT :limit""",
+                    country=country, limit=limit)
 
         # Increment times_used for returned scenes
         keys = [r[0] for r in rows]
@@ -1206,15 +1290,19 @@ def get_refs():
     except Exception as e:
         return safe_error(e)
 
-    if not rows:
-        return jsonify({"images": [], "count": 0})
-
-    # Fetch images from R2 in parallel (simple sequential for now)
     images = []
     for r2_key, region_name, score in rows:
         b64 = get_r2_image_b64(r2_key)
         if b64:
-            images.append({"b64": b64, "region": region_name, "quality_score": score})
+            images.append({"b64": b64, "region": region_name, "quality_score": score, "source": "community"})
+
+    # 3. Still nothing? Try a real photo from Mapillary near the exact
+    # coordinates, so the guide can show something genuinely accurate
+    # instead of a misleading same-state photo or no photo at all.
+    if not images and lat is not None and lng is not None:
+        mapillary_b64 = fetch_mapillary_image(lat, lng)
+        if mapillary_b64:
+            images.append({"b64": mapillary_b64, "region": region or state, "quality_score": 0, "source": "mapillary"})
 
     return jsonify({"images": images, "count": len(images)})
 
