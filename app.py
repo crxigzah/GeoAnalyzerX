@@ -1020,21 +1020,16 @@ def ai_usage():
         })
     except Exception as e:
         return safe_error(e)
-@app.route("/scenes/validate", methods=["POST", "OPTIONS"])
-def validate_scene():
-    """Use Claude to check if image is a genuine Street View scene."""
-    if request.method == "OPTIONS": return jsonify({}), 200
+def ai_check_scene_quality(image_b64):
+    """Uses Claude to check if an image is a genuine outdoor Street-View-style
+    scene, to keep the community library free of junk (selfies, screenshots
+    of menus, blank/black images, memes, etc). Fails open (allows the
+    upload) if the API key is missing or the check itself errors, so a
+    Claude API outage never blocks legitimate F7 captures entirely."""
     import requests as req
-    image_b64 = (request.json or {}).get("image", "")
-    if not image_b64:
-        return jsonify({"valid": False, "reason": "no image"}), 400
-    img_ok, img_err = validate_image_b64(image_b64)
-    if not img_ok:
-        return jsonify({"valid": False, "reason": img_err}), 400
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not anthropic_key:
-        # No key configured — allow upload (fail open)
-        return jsonify({"valid": True, "reason": "validation skipped"})
+        return True, "validation skipped"
     try:
         resp = req.post(
             "https://api.anthropic.com/v1/messages",
@@ -1057,11 +1052,23 @@ def validate_scene():
             timeout=10
         )
         answer = resp.json().get("content", [{}])[0].get("text", "").strip().upper()
-        valid = answer.startswith("YES")
-        return jsonify({"valid": valid, "reason": answer})
+        return answer.startswith("YES"), answer
     except Exception as e:
-        print("Validate error:", e)
-        return jsonify({"valid": True, "reason": "validation error — allowing"})
+        print("Scene quality check error:", e)
+        return True, "validation error — allowing"
+
+@app.route("/scenes/validate", methods=["POST", "OPTIONS"])
+def validate_scene():
+    """Use Claude to check if image is a genuine Street View scene."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    image_b64 = (request.json or {}).get("image", "")
+    if not image_b64:
+        return jsonify({"valid": False, "reason": "no image"}), 400
+    img_ok, img_err = validate_image_b64(image_b64)
+    if not img_ok:
+        return jsonify({"valid": False, "reason": img_err}), 400
+    valid, reason = ai_check_scene_quality(image_b64)
+    return jsonify({"valid": valid, "reason": reason})
 
 @app.route("/scenes/upload", methods=["POST", "OPTIONS"])
 def upload_scene():
@@ -1084,16 +1091,6 @@ def upload_scene():
     if rate_limited("scene_upload", str(user_id), max_attempts=30, window_seconds=60):
         return jsonify({"error": "Too many requests, please slow down."}), 429
 
-    if tier != "pro":
-        allowed, remaining = check_and_increment_usage(user_id, 'f7_captures')
-        if not allowed:
-            return jsonify({
-                "error": "Daily F7 limit reached",
-                "code": "limit",
-                "message": f"You've used all {FREE_DAILY_LIMIT} free F7 captures for today. Upgrade to Pro for unlimited captures.",
-                "uploaded": False
-            }), 429
-
     # If state is missing but we have coords and country is Australia, detect from coords
     if not state and country == 'Australia' and lat and lng:
         state = get_aus_state_from_coords(lat, lng)
@@ -1104,6 +1101,29 @@ def upload_scene():
     img_ok, img_err = validate_image_b64(image_b64)
     if not img_ok:
         return jsonify({"error": img_err}), 400
+
+    # AI quality check — keeps the community library free of selfies,
+    # screenshots, blank/black frames, or other non-scene junk. Checked
+    # before the daily quota is touched, so a rejected capture doesn't
+    # cost the user one of their free uploads for the day.
+    scene_ok, scene_reason = ai_check_scene_quality(image_b64)
+    if not scene_ok:
+        return jsonify({
+            "error": "This doesn't look like a Street View scene, so it wasn't added to the library.",
+            "code": "low_quality",
+            "reason": scene_reason,
+            "uploaded": False
+        }), 400
+
+    if tier != "pro":
+        allowed, remaining = check_and_increment_usage(user_id, 'f7_captures')
+        if not allowed:
+            return jsonify({
+                "error": "Daily F7 limit reached",
+                "code": "limit",
+                "message": f"You've used all {FREE_DAILY_LIMIT} free F7 captures for today. Upgrade to Pro for unlimited captures.",
+                "uploaded": False
+            }), 429
 
     if not SUPABASE_URL:
         return jsonify({"error": "Cloud storage not configured"}), 503
