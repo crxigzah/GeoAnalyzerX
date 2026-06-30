@@ -1,10 +1,10 @@
 """
 GeoAnalyzerX Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
 """
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-import hashlib, os, secrets, uuid, base64, io, time, threading, re, math
+import hashlib, os, secrets, uuid, base64, io, time, threading, re, math, queue, json as _json
 import pg8000.native
 from urllib.parse import urlparse
 
@@ -19,6 +19,26 @@ CORS(app, origins=[
     re.compile(r"^chrome-extension://.*$"),
     re.compile(r"^moz-extension://.*$"),
 ], supports_credentials=True, allow_headers=["Content-Type", "X-Admin-Key", "X-Admin-Token"])
+
+# ── SSE admin event bus ───────────────────────────────────
+# Each connected admin panel gets its own Queue. When log_event() fires,
+# it pushes the event to every active queue so the browser receives it
+# instantly via the persistent SSE connection rather than polling.
+_sse_subscribers = []
+_sse_lock = threading.Lock()
+
+def _sse_push(event_dict):
+    """Push an event to all connected admin SSE clients. Dead connections
+    are pruned automatically when their queue.put() raises (queue full)."""
+    with _sse_lock:
+        dead = []
+        for q in _sse_subscribers:
+            try:
+                q.put_nowait(event_dict)
+            except Exception:
+                dead.append(q)
+        for q in dead:
+            _sse_subscribers.remove(q)
 
 # ── Config ────────────────────────────────────────────────
 DATABASE_URL       = os.environ.get("DATABASE_URL", "")
@@ -217,6 +237,19 @@ def log_event(event_type, user_id=None, username=None, detail=None, ip=None):
         conn.close()
     except Exception as le:
         print("log_event error:", le)
+    # Push instantly to any connected admin SSE clients
+    try:
+        from datetime import datetime
+        _sse_push({
+            "event_type": event_type,
+            "user_id": user_id,
+            "username": username,
+            "detail": detail,
+            "ip": ip,
+            "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        })
+    except Exception:
+        pass
 
 def validate_image_b64(image_b64, max_bytes=8 * 1024 * 1024):
     """Confirms the string is valid base64 that decodes to actual image
@@ -818,20 +851,20 @@ def call_claude(messages, system=None, max_tokens=400):
     return data["content"][0]["text"].strip()
 
 def get_user_from_token(token):
-    """Returns (user_id, tier) or (None, None)."""
+    """Returns (user_id, tier, username) or (None, None, None)."""
     if not token:
-        return None, None
+        return None, None, None
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id, u.tier FROM users u
+        rows = conn.run("""SELECT u.id, u.tier, u.username FROM users u
             JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
         conn.close()
         if rows:
-            return rows[0][0], rows[0][1]
+            return rows[0][0], rows[0][1], rows[0][2]
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 FREE_DAILY_LIMIT = 10
 
@@ -874,7 +907,7 @@ def ai_analyse():
     if not img_ok:
         return jsonify({"error": img_err}), 400
 
-    user_id, tier = get_user_from_token(token)
+    user_id, tier, username = get_user_from_token(token)
     if not user_id:
         return jsonify({"error": "Not logged in", "code": "auth"}), 401
 
@@ -920,7 +953,7 @@ def ai_analyse():
                 {"type": "text", "text": prompt}
             ]
         }], system=SYSTEM_PROMPT, max_tokens=400)
-        log_event("ai_analyse", user_id=user_id, detail=f"country={country}", ip=client_ip())
+        log_event("ai_analyse", user_id=user_id, username=username, detail=f"country={country}", ip=client_ip())
         return jsonify({"result": result, "tier": tier})
     except Exception as e:
         return safe_error(e)
@@ -941,7 +974,7 @@ def ai_teaching():
     if not img_ok:
         return jsonify({"error": img_err}), 400
 
-    user_id, tier = get_user_from_token(token)
+    user_id, tier, username = get_user_from_token(token)
     if not user_id:
         return jsonify({"error": "Not logged in", "code": "auth"}), 401
 
@@ -996,7 +1029,7 @@ def ai_teaching():
         )})
 
         result = call_claude([{"role": "user", "content": content}], max_tokens=350)
-        log_event("teaching_guide", user_id=user_id, detail=f"location={correct_name}", ip=client_ip())
+        log_event("teaching_guide", user_id=user_id, username=username, detail=f"location={correct_name}", ip=client_ip())
         return jsonify({"teaching": result})
     except Exception as e:
         return safe_error(e)
@@ -1012,7 +1045,7 @@ def ai_chat():
     if not message:
         return jsonify({"error": "Empty message"}), 400
 
-    user_id, tier = get_user_from_token(token)
+    user_id, tier, username = get_user_from_token(token)
     if not user_id:
         return jsonify({"error": "Not logged in", "code": "auth"}), 401
 
@@ -1068,7 +1101,7 @@ def ai_usage():
     """Return today's usage for a user."""
     if request.method == "OPTIONS": return jsonify({}), 200
     token = (request.json or {}).get("token", "")
-    user_id, tier = get_user_from_token(token)
+    user_id, tier, username = get_user_from_token(token)
     if not user_id:
         return jsonify({"error": "Not logged in"}), 401
     if tier == "pro":
@@ -1155,7 +1188,7 @@ def upload_scene():
 
     # Require authentication — previously an empty/missing token skipped
     # this check entirely, allowing fully anonymous, unlimited uploads.
-    user_id, tier = get_user_from_token(token)
+    user_id, tier, username = get_user_from_token(token)
     if not user_id:
         return jsonify({"error": "Not logged in", "code": "auth"}), 401
 
@@ -1229,7 +1262,7 @@ def upload_scene():
     except Exception as e:
         return safe_error(e)
 
-    log_event("scene_upload", user_id=user_id, detail=f"country={country} state={state} region={region}", ip=client_ip())
+    log_event("scene_upload", user_id=user_id, username=username, detail=f"country={country} state={state} region={region}", ip=client_ip())
     return jsonify({"uploaded": True, "region": region, "key": r2_key})
 
 MAPILLARY_TOKEN = os.environ.get("MAPILLARY_ACCESS_TOKEN", "")
@@ -1394,14 +1427,16 @@ def scene_count():
 # ── Admin ─────────────────────────────────────────────────
 def require_admin():
     """Returns (ok, error_response). Requires both the ADMIN_KEY (via X-Admin-Key
-    header) AND a valid session token (via X-Admin-Token header) belonging to a
-    user with is_admin=TRUE. Keeping these out of the URL/body means they never
-    end up in server access logs or browser history."""
+    header or 'key' query param for SSE) AND a valid session token (via X-Admin-Token
+    header or 'token' query param for SSE). Keeping these out of the body means they
+    never end up in server access logs."""
     if rate_limited("admin_check", client_ip(), max_attempts=60, window_seconds=60):
         return False, (jsonify({"error":"Too many requests"}), 429)
-    if not ADMIN_KEY or request.headers.get("X-Admin-Key") != ADMIN_KEY:
+    # Accept from headers (normal requests) or query params (SSE — EventSource can't set headers)
+    admin_key   = request.headers.get("X-Admin-Key")   or request.args.get("key", "")
+    admin_token = request.headers.get("X-Admin-Token") or request.args.get("token", "")
+    if not ADMIN_KEY or admin_key != ADMIN_KEY:
         return False, (jsonify({"error":"Forbidden"}), 403)
-    admin_token = request.headers.get("X-Admin-Token", "")
     if not admin_token:
         return False, (jsonify({"error":"Admin login required"}), 401)
     try:
@@ -1463,11 +1498,13 @@ def admin_toggle_disabled():
         return jsonify({"error":"user_id required"}),400
     try:
         conn = get_db()
+        urows = conn.run("SELECT username FROM users WHERE id=:uid", uid=user_id)
+        target_username = urows[0][0] if urows else str(user_id)
         conn.run("UPDATE users SET disabled=:d WHERE id=:uid", d=disabled, uid=user_id)
         if disabled:
             conn.run("DELETE FROM sessions WHERE user_id=:uid", uid=user_id)
         conn.close()
-        log_event("admin_disable" if disabled else "admin_enable", user_id=user_id, ip=client_ip())
+        log_event("admin_disable" if disabled else "admin_enable", user_id=user_id, username=target_username, ip=client_ip())
         return jsonify({"success": True, "disabled": disabled})
     except Exception as e:
         return safe_error(e)
@@ -1485,6 +1522,8 @@ def admin_ban_user():
         return jsonify({"error":"user_id required"}),400
     try:
         conn = get_db()
+        urows = conn.run("SELECT username FROM users WHERE id=:uid", uid=user_id)
+        target_username = urows[0][0] if urows else str(user_id)
         if duration == "unban":
             conn.run("UPDATE users SET banned_until=NULL, ban_reason=NULL WHERE id=:uid", uid=user_id)
         else:
@@ -1498,7 +1537,7 @@ def admin_ban_user():
             # Also kill their active sessions immediately
             conn.run("DELETE FROM sessions WHERE user_id=:uid", uid=user_id)
         conn.close()
-        log_event("admin_unban" if duration == "unban" else "admin_ban", user_id=user_id, detail=f"duration={duration} reason={reason}", ip=client_ip())
+        log_event("admin_unban" if duration == "unban" else "admin_ban", user_id=user_id, username=target_username, detail=f"duration={duration} reason={reason}", ip=client_ip())
         return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
@@ -1514,11 +1553,13 @@ def admin_delete_user():
         return jsonify({"error":"user_id required"}),400
     try:
         conn = get_db()
+        urows = conn.run("SELECT username FROM users WHERE id=:uid", uid=user_id)
+        target_username = urows[0][0] if urows else str(user_id)
         conn.run("DELETE FROM usage WHERE user_id=:uid", uid=user_id)
         conn.run("DELETE FROM sessions WHERE user_id=:uid", uid=user_id)
         conn.run("DELETE FROM users WHERE id=:uid", uid=user_id)
         conn.close()
-        log_event("admin_delete_user", user_id=user_id, ip=client_ip())
+        log_event("admin_delete_user", user_id=user_id, username=target_username, ip=client_ip())
         return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
@@ -1610,6 +1651,39 @@ def admin_users():
         return jsonify({"users":users,"count":len(users)})
     except Exception as e:
         return safe_error(e)
+
+@app.route("/admin/events", methods=["GET"])
+def admin_events():
+    """Server-Sent Events stream for the admin panel. Pushes each new
+    activity_log entry to the browser the instant it's written, so the
+    admin panel updates in real time without polling."""
+    ok, err = require_admin()
+    if not ok: return err
+    def stream():
+        q = queue.Queue(maxsize=100)
+        with _sse_lock:
+            _sse_subscribers.append(q)
+        try:
+            # Send a heartbeat comment every 25s to keep the connection alive
+            # through proxies/load balancers that close idle connections.
+            while True:
+                try:
+                    event = q.get(timeout=25)
+                    yield f"data: {_json.dumps(event)}\n\n"
+                except queue.Empty:
+                    yield ": heartbeat\n\n"
+        finally:
+            with _sse_lock:
+                if q in _sse_subscribers:
+                    _sse_subscribers.remove(q)
+    return Response(
+        stream_with_context(stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # prevents Nginx from buffering the stream
+        }
+    )
 
 @app.route("/admin/activity_logs", methods=["GET","OPTIONS"])
 def admin_activity_logs():
