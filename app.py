@@ -16,6 +16,7 @@ import requests as http_requests
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM     = os.environ.get("EMAIL_FROM", "GeoAnalyzerX <noreply@geoanalyzerx.net>")
+ADMIN_KEY      = os.environ.get("ADMIN_KEY", "")
 
 def send_email(to, subject, html):
     if not RESEND_API_KEY:
@@ -312,13 +313,16 @@ def login():
     password = d.get("password","")
     try:
         conn = get_db()
-        rows = conn.run("SELECT id,username,email,tier,banned_until,ban_reason,disabled FROM users WHERE email=:e AND password=:p",
+        rows = conn.run("SELECT id,username,email,tier,banned_until,ban_reason,disabled,email_verified FROM users WHERE email=:e AND password=:p",
                         e=email, p=hp(password))
         if not rows:
             conn.close(); return jsonify({"error":"Invalid email or password"}),401
         if rows[0][6]:
             conn.close()
             return jsonify({"error": "Account disabled", "code": "disabled"}), 403
+        if not rows[0][7]:
+            conn.close()
+            return jsonify({"error": "Please verify your email before logging in", "code": "unverified"}), 403
         banned_until = rows[0][4]
         if banned_until and str(banned_until) != 'None':
             conn.close()
