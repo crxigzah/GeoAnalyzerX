@@ -3,12 +3,18 @@ GeoAnalyzerX Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
 """
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import hashlib, os, secrets, uuid, base64, io
+from werkzeug.security import generate_password_hash, check_password_hash
+import hashlib, os, secrets, uuid, base64, io, time, threading, re
 import pg8000.native
 from urllib.parse import urlparse
 
 app = Flask(__name__)
-CORS(app, origins=["*"], supports_credentials=True)
+CORS(app, origins=[
+    "https://geoanalyzerx.net",
+    "https://www.geoanalyzerx.net",
+    re.compile(r"^chrome-extension://.*$"),
+    re.compile(r"^moz-extension://.*$"),
+], supports_credentials=True, allow_headers=["Content-Type", "X-Admin-Key", "X-Admin-Token"])
 
 # ── Config ────────────────────────────────────────────────
 DATABASE_URL       = os.environ.get("DATABASE_URL", "")
@@ -66,12 +72,6 @@ print(f"Stripe key loaded: {'YES' if stripe.api_key else 'MISSING'}")
 print(f"Stripe price ID:   {'YES' if STRIPE_PRO_PRICE_ID else 'MISSING'}")
 print(f"Stripe webhook:    {'YES' if STRIPE_WEBHOOK_SECRET else 'MISSING'}")
 
-@app.after_request
-def add_cors(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Auth-Token'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    return response
 
 # ── DB ────────────────────────────────────────────────────
 def get_db():
@@ -133,7 +133,47 @@ def init_db():
     except Exception as e:
         print("DB init error:", e)
 
-def hp(p): return hashlib.sha256(p.encode()).hexdigest()
+def hp(p): return hashlib.sha256(p.encode()).hexdigest()  # legacy hash, kept only for migrating old accounts
+
+def hash_password(p):
+    """New accounts/password changes always use a salted, slow hash."""
+    return generate_password_hash(p)
+
+def verify_password(stored, plain):
+    """Returns True/False. Supports both new salted hashes and legacy
+    unsalted SHA-256 hashes (for accounts created before this upgrade)."""
+    if not stored:
+        return False
+    if stored.startswith(("scrypt:", "pbkdf2:")):
+        return check_password_hash(stored, plain)
+    # Legacy SHA-256 hash format
+    return stored == hp(plain)
+
+# ── Simple in-memory rate limiter ────────────────────────────
+# Good enough for a single Render instance. Keyed by (bucket, identifier).
+_rate_buckets = {}
+_rate_lock = threading.Lock()
+
+def rate_limited(bucket, identifier, max_attempts, window_seconds):
+    """Returns True if this identifier has exceeded max_attempts within
+    window_seconds for the given bucket (e.g. 'login', 'verify_email')."""
+    key = f"{bucket}:{identifier}"
+    now = time.time()
+    with _rate_lock:
+        attempts = _rate_buckets.get(key, [])
+        attempts = [t for t in attempts if now - t < window_seconds]
+        if len(attempts) >= max_attempts:
+            _rate_buckets[key] = attempts
+            return True
+        attempts.append(now)
+        _rate_buckets[key] = attempts
+        return False
+
+def client_ip():
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.remote_addr or "unknown"
 
 # ── R2 / S3 helpers ───────────────────────────────────────
 SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
@@ -233,6 +273,8 @@ def register():
     username = d.get("username","").strip()
     email    = d.get("email","").strip().lower()
     password = d.get("password","")
+    if rate_limited("register_ip", client_ip(), max_attempts=10, window_seconds=3600):
+        return jsonify({"error": "Too many accounts created from this network. Try again later."}), 429
     if len(username)<3: return jsonify({"error":"Username must be at least 3 characters"}),400
     if "@" not in email: return jsonify({"error":"Invalid email"}),400
     if len(password)<6: return jsonify({"error":"Password must be at least 6 characters"}),400
@@ -243,7 +285,7 @@ def register():
             """INSERT INTO users (username,email,password,verify_code,verify_expires)
                VALUES (:u,:e,:p,:c,NOW() + INTERVAL '15 minutes')
                RETURNING id,username,email,tier""",
-            u=username, e=email, p=hp(password), c=verify_code)
+            u=username, e=email, p=hash_password(password), c=verify_code)
         user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3]}
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
@@ -263,6 +305,8 @@ def verify_email():
     code  = d.get("code", "").strip()
     if not token or not code:
         return jsonify({"error": "Token and code required"}), 400
+    if rate_limited("verify_email", token, max_attempts=8, window_seconds=900):
+        return jsonify({"error": "Too many attempts. Please request a new code and try again shortly."}), 429
     try:
         conn = get_db()
         rows = conn.run("""SELECT u.id, u.verify_code, u.verify_expires, u.email_verified
@@ -288,6 +332,10 @@ def resend_code():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
     token = d.get("token", "")
+    if not token:
+        return jsonify({"error": "Invalid session"}), 401
+    if rate_limited("resend_code", token, max_attempts=3, window_seconds=600):
+        return jsonify({"error": "Please wait a few minutes before requesting another code."}), 429
     try:
         conn = get_db()
         rows = conn.run("""SELECT u.id, u.username, u.email, u.email_verified FROM users u
@@ -312,12 +360,22 @@ def login():
     d = request.json or {}
     email    = d.get("email","").strip().lower()
     password = d.get("password","")
+    totp_code = d.get("totp_code", "").strip()
+
+    if rate_limited("login_ip", client_ip(), max_attempts=20, window_seconds=600):
+        return jsonify({"error": "Too many login attempts from this network. Try again in a few minutes."}), 429
+    if email and rate_limited("login_email", email, max_attempts=8, window_seconds=600):
+        return jsonify({"error": "Too many login attempts for this account. Try again in a few minutes."}), 429
+
     try:
         conn = get_db()
-        rows = conn.run("SELECT id,username,email,tier,banned_until,ban_reason,disabled,email_verified FROM users WHERE email=:e AND password=:p",
-                        e=email, p=hp(password))
-        if not rows:
+        rows = conn.run("""SELECT id,username,email,tier,banned_until,ban_reason,disabled,email_verified,
+                            password,totp_enabled,totp_secret FROM users WHERE email=:e""", e=email)
+        if not rows or not verify_password(rows[0][8], password):
             conn.close(); return jsonify({"error":"Invalid email or password"}),401
+        # Transparently upgrade legacy SHA-256 hashes to salted hashes on successful login
+        if not rows[0][8].startswith(("scrypt:", "pbkdf2:")):
+            conn.run("UPDATE users SET password=:p WHERE id=:uid", p=hash_password(password), uid=rows[0][0])
         if rows[0][6]:
             conn.close()
             return jsonify({"error": "Account disabled", "code": "disabled"}), 403
@@ -333,6 +391,14 @@ def login():
                 "banned_until": str(banned_until),
                 "ban_reason": rows[0][5] or "Violation of terms of service"
             }), 403
+        totp_enabled, totp_secret = rows[0][9], rows[0][10]
+        if totp_enabled:
+            if not totp_code:
+                conn.close()
+                return jsonify({"error": "2FA code required", "code": "totp_required"}), 401
+            if not pyotp.TOTP(totp_secret).verify(totp_code, valid_window=1):
+                conn.close()
+                return jsonify({"error": "Invalid 2FA code", "code": "totp_invalid"}), 401
         user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3]}
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
@@ -382,11 +448,11 @@ def change_password():
         user_id, pwd_hash = rows[0][0], rows[0][1]
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    if hp(current) != pwd_hash:
+    if not verify_password(pwd_hash, current):
         return jsonify({"error": "Current password is incorrect"}), 400
     try:
         conn = get_db()
-        conn.run("UPDATE users SET password=:p WHERE id=:uid", p=hp(new_pwd), uid=user_id)
+        conn.run("UPDATE users SET password=:p WHERE id=:uid", p=hash_password(new_pwd), uid=user_id)
         conn.close()
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -674,6 +740,9 @@ def ai_analyse():
     if not user_id:
         return jsonify({"error": "Not logged in", "code": "auth"}), 401
 
+    if rate_limited("ai_analyse", str(user_id), max_attempts=20, window_seconds=60):
+        return jsonify({"error": "Too many requests, please slow down."}), 429
+
     if tier != "pro":
         # Free users cannot use the Analyse button at all
         return jsonify({
@@ -713,7 +782,7 @@ def ai_analyse():
                 {"type": "text", "text": prompt}
             ]
         }], system=SYSTEM_PROMPT, max_tokens=400)
-        return jsonify({"result": result, "remaining": remaining, "tier": tier})
+        return jsonify({"result": result, "tier": tier})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -733,6 +802,9 @@ def ai_teaching():
     user_id, tier = get_user_from_token(token)
     if not user_id:
         return jsonify({"error": "Not logged in", "code": "auth"}), 401
+
+    if rate_limited("ai_teaching", str(user_id), max_attempts=20, window_seconds=60):
+        return jsonify({"error": "Too many requests, please slow down."}), 429
 
     # Teaching counts against teachings limit
     if tier != "pro":
@@ -800,6 +872,9 @@ def ai_chat():
     user_id, tier = get_user_from_token(token)
     if not user_id:
         return jsonify({"error": "Not logged in", "code": "auth"}), 401
+
+    if rate_limited("ai_chat", str(user_id), max_attempts=30, window_seconds=60):
+        return jsonify({"error": "Too many requests, please slow down."}), 429
 
     # Chat only for pro users
     if tier != "pro":
@@ -899,18 +974,24 @@ def upload_scene():
     lng       = d.get("lng")
     token     = d.get("token", "")
 
-    # Check F7 limit for free users
-    if token:
-        user_id, tier = get_user_from_token(token)
-        if user_id and tier != "pro":
-            allowed, remaining = check_and_increment_usage(user_id, 'f7_captures')
-            if not allowed:
-                return jsonify({
-                    "error": "Daily F7 limit reached",
-                    "code": "limit",
-                    "message": f"You've used all {FREE_DAILY_LIMIT} free F7 captures for today. Upgrade to Pro for unlimited captures.",
-                    "uploaded": False
-                }), 429
+    # Require authentication — previously an empty/missing token skipped
+    # this check entirely, allowing fully anonymous, unlimited uploads.
+    user_id, tier = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in", "code": "auth"}), 401
+
+    if rate_limited("scene_upload", str(user_id), max_attempts=30, window_seconds=60):
+        return jsonify({"error": "Too many requests, please slow down."}), 429
+
+    if tier != "pro":
+        allowed, remaining = check_and_increment_usage(user_id, 'f7_captures')
+        if not allowed:
+            return jsonify({
+                "error": "Daily F7 limit reached",
+                "code": "limit",
+                "message": f"You've used all {FREE_DAILY_LIMIT} free F7 captures for today. Upgrade to Pro for unlimited captures.",
+                "uploaded": False
+            }), 429
 
     # If state is missing but we have coords and country is Australia, detect from coords
     if not state and country == 'Australia' and lat and lng:
@@ -1025,12 +1106,16 @@ def scene_count():
         return jsonify({"error": str(e)}), 500
 
 # ── Admin ─────────────────────────────────────────────────
-def require_admin(d):
-    """Returns (ok, error_response). Requires both the ADMIN_KEY AND a valid
-    session token belonging to a user with is_admin=TRUE."""
-    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
+def require_admin():
+    """Returns (ok, error_response). Requires both the ADMIN_KEY (via X-Admin-Key
+    header) AND a valid session token (via X-Admin-Token header) belonging to a
+    user with is_admin=TRUE. Keeping these out of the URL/body means they never
+    end up in server access logs or browser history."""
+    if rate_limited("admin_check", client_ip(), max_attempts=60, window_seconds=60):
+        return False, (jsonify({"error":"Too many requests"}), 429)
+    if not ADMIN_KEY or request.headers.get("X-Admin-Key") != ADMIN_KEY:
         return False, (jsonify({"error":"Forbidden"}), 403)
-    admin_token = d.get("admin_token", "")
+    admin_token = request.headers.get("X-Admin-Token", "")
     if not admin_token:
         return False, (jsonify({"error":"Admin login required"}), 401)
     try:
@@ -1048,19 +1133,29 @@ def require_admin(d):
 @app.route("/admin/login", methods=["POST","OPTIONS"])
 def admin_login():
     """Separate from /auth/login: verifies admin_key + credentials + is_admin in one step,
-    and returns a session token for use as admin_token on every other /admin/* call."""
+    and returns a session token for use as the X-Admin-Token header on every other /admin/* call."""
     if request.method == "OPTIONS": return jsonify({}), 200
+    if rate_limited("admin_login_ip", client_ip(), max_attempts=10, window_seconds=600):
+        return jsonify({"error": "Too many login attempts. Try again later."}), 429
     d = request.json or {}
-    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
+    if not ADMIN_KEY or request.headers.get("X-Admin-Key") != ADMIN_KEY:
         return jsonify({"error":"Forbidden"}),403
     email    = d.get("email","").strip().lower()
     password = d.get("password","")
+    totp_code = d.get("totp_code", "").strip()
+    if rate_limited("admin_login_email", email, max_attempts=6, window_seconds=600):
+        return jsonify({"error": "Too many login attempts for this account. Try again later."}), 429
     try:
         conn = get_db()
-        rows = conn.run("SELECT id,username,email,is_admin FROM users WHERE email=:e AND password=:p",
-                        e=email, p=hp(password))
-        if not rows or not rows[0][3]:
+        rows = conn.run("SELECT id,username,email,is_admin,password,totp_enabled,totp_secret FROM users WHERE email=:e", e=email)
+        if not rows or not verify_password(rows[0][4], password) or not rows[0][3]:
             conn.close(); return jsonify({"error":"Invalid credentials or not an admin"}),403
+        totp_enabled, totp_secret = rows[0][5], rows[0][6]
+        if totp_enabled:
+            if not totp_code:
+                conn.close(); return jsonify({"error": "2FA code required", "code": "totp_required"}), 401
+            if not pyotp.TOTP(totp_secret).verify(totp_code, valid_window=1):
+                conn.close(); return jsonify({"error": "Invalid 2FA code", "code": "totp_invalid"}), 401
         user_id = rows[0][0]
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user_id)
@@ -1073,7 +1168,7 @@ def admin_login():
 def admin_toggle_disabled():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    ok, err = require_admin(d)
+    ok, err = require_admin()
     if not ok: return err
     user_id = d.get("user_id")
     disabled = d.get("disabled", True)
@@ -1093,7 +1188,7 @@ def admin_toggle_disabled():
 def admin_ban_user():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    ok, err = require_admin(d)
+    ok, err = require_admin()
     if not ok: return err
     user_id = d.get("user_id")
     duration = d.get("duration")  # '1d','3d','1w','1m','permanent','unban'
@@ -1123,7 +1218,7 @@ def admin_ban_user():
 def admin_delete_user():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    ok, err = require_admin(d)
+    ok, err = require_admin()
     if not ok: return err
     user_id = d.get("user_id")
     if not user_id:
@@ -1142,7 +1237,7 @@ def admin_delete_user():
 def admin_reset_usage():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    ok, err = require_admin(d)
+    ok, err = require_admin()
     if not ok: return err
     user_id = d.get("user_id")
     try:
@@ -1160,7 +1255,7 @@ def admin_reset_usage():
 def admin_set_tier():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    ok, err = require_admin(d)
+    ok, err = require_admin()
     if not ok: return err
     user_id = d.get("user_id")
     email   = d.get("email","").strip().lower()
@@ -1183,7 +1278,7 @@ def admin_set_tier():
 @app.route("/admin/stats", methods=["GET","OPTIONS"])
 def admin_stats():
     if request.method == "OPTIONS": return jsonify({}), 200
-    ok, err = require_admin(request.args)
+    ok, err = require_admin()
     if not ok: return err
     try:
         conn = get_db()
@@ -1209,7 +1304,7 @@ def admin_stats():
 @app.route("/admin/users", methods=["GET","OPTIONS"])
 def admin_users():
     if request.method == "OPTIONS": return jsonify({}), 200
-    ok, err = require_admin(request.args)
+    ok, err = require_admin()
     if not ok: return err
     try:
         conn  = get_db()
@@ -1228,7 +1323,7 @@ def admin_users():
 def admin_set_admin():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    ok, err = require_admin(d)
+    ok, err = require_admin()
     if not ok: return err
     user_id  = d.get("user_id")
     is_admin = bool(d.get("is_admin", True))
@@ -1255,7 +1350,7 @@ def admin_set_admin():
 def admin_resend_verification():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    ok, err = require_admin(d)
+    ok, err = require_admin()
     if not ok: return err
     user_id = d.get("user_id")
     if not user_id:
