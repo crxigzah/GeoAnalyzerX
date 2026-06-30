@@ -101,6 +101,7 @@ def init_db():
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_code TEXT")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_expires TIMESTAMPTZ")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE")
         except: pass
         conn.run("""CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY, user_id INT REFERENCES users(id),
@@ -1024,12 +1025,56 @@ def scene_count():
         return jsonify({"error": str(e)}), 500
 
 # ── Admin ─────────────────────────────────────────────────
-@app.route("/admin/toggle_disabled", methods=["POST","OPTIONS"])
-def admin_toggle_disabled():
+def require_admin(d):
+    """Returns (ok, error_response). Requires both the ADMIN_KEY AND a valid
+    session token belonging to a user with is_admin=TRUE."""
+    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
+        return False, (jsonify({"error":"Forbidden"}), 403)
+    admin_token = d.get("admin_token", "")
+    if not admin_token:
+        return False, (jsonify({"error":"Admin login required"}), 401)
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.is_admin FROM users u
+            JOIN sessions s ON s.user_id=u.id
+            WHERE s.token=:t AND s.expires_at>NOW()""", t=admin_token)
+        conn.close()
+    except Exception as e:
+        return False, (jsonify({"error": str(e)}), 500)
+    if not rows or not rows[0][0]:
+        return False, (jsonify({"error":"Account is not an admin"}), 403)
+    return True, None
+
+@app.route("/admin/login", methods=["POST","OPTIONS"])
+def admin_login():
+    """Separate from /auth/login: verifies admin_key + credentials + is_admin in one step,
+    and returns a session token for use as admin_token on every other /admin/* call."""
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
     if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
         return jsonify({"error":"Forbidden"}),403
+    email    = d.get("email","").strip().lower()
+    password = d.get("password","")
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT id,username,email,is_admin FROM users WHERE email=:e AND password=:p",
+                        e=email, p=hp(password))
+        if not rows or not rows[0][3]:
+            conn.close(); return jsonify({"error":"Invalid credentials or not an admin"}),403
+        user_id = rows[0][0]
+        token = secrets.token_urlsafe(32)
+        conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user_id)
+        conn.close()
+        return jsonify({"admin_token": token, "username": rows[0][1], "email": rows[0][2]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/admin/toggle_disabled", methods=["POST","OPTIONS"])
+def admin_toggle_disabled():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    ok, err = require_admin(d)
+    if not ok: return err
     user_id = d.get("user_id")
     disabled = d.get("disabled", True)
     if not user_id:
@@ -1048,8 +1093,8 @@ def admin_toggle_disabled():
 def admin_ban_user():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
-        return jsonify({"error":"Forbidden"}),403
+    ok, err = require_admin(d)
+    if not ok: return err
     user_id = d.get("user_id")
     duration = d.get("duration")  # '1d','3d','1w','1m','permanent','unban'
     reason = d.get("reason", "")
@@ -1078,8 +1123,8 @@ def admin_ban_user():
 def admin_delete_user():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
-        return jsonify({"error":"Forbidden"}),403
+    ok, err = require_admin(d)
+    if not ok: return err
     user_id = d.get("user_id")
     if not user_id:
         return jsonify({"error":"user_id required"}),400
@@ -1097,8 +1142,8 @@ def admin_delete_user():
 def admin_reset_usage():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
-        return jsonify({"error":"Forbidden"}),403
+    ok, err = require_admin(d)
+    if not ok: return err
     user_id = d.get("user_id")
     try:
         conn = get_db()
@@ -1115,8 +1160,8 @@ def admin_reset_usage():
 def admin_set_tier():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    if not ADMIN_KEY or d.get("admin_key") != ADMIN_KEY:
-        return jsonify({"error":"Forbidden"}),403
+    ok, err = require_admin(d)
+    if not ok: return err
     user_id = d.get("user_id")
     email   = d.get("email","").strip().lower()
     tier    = d.get("tier","free")
@@ -1138,8 +1183,8 @@ def admin_set_tier():
 @app.route("/admin/stats", methods=["GET","OPTIONS"])
 def admin_stats():
     if request.method == "OPTIONS": return jsonify({}), 200
-    if not ADMIN_KEY or request.args.get("admin_key") != ADMIN_KEY:
-        return jsonify({"error":"Forbidden"}),403
+    ok, err = require_admin(request.args)
+    if not ok: return err
     try:
         conn = get_db()
         users     = conn.run("SELECT COUNT(*) FROM users")[0][0]
@@ -1164,17 +1209,71 @@ def admin_stats():
 @app.route("/admin/users", methods=["GET","OPTIONS"])
 def admin_users():
     if request.method == "OPTIONS": return jsonify({}), 200
-    if not ADMIN_KEY or request.args.get("admin_key") != ADMIN_KEY:
-        return jsonify({"error":"Forbidden"}),403
+    ok, err = require_admin(request.args)
+    if not ok: return err
     try:
         conn  = get_db()
-        rows  = conn.run("SELECT id,username,email,tier,created_at,last_login,banned_until,ban_reason,disabled FROM users ORDER BY created_at DESC")
+        rows  = conn.run("SELECT id,username,email,tier,created_at,last_login,banned_until,ban_reason,disabled,is_admin,email_verified FROM users ORDER BY created_at DESC")
         conn.close()
         users = [{"id":r[0],"username":r[1],"email":r[2],"tier":r[3],
                   "created_at":str(r[4]),"last_login":str(r[5]),
                   "banned_until": str(r[6]) if r[6] else None,
-                  "ban_reason": r[7], "disabled": bool(r[8])} for r in rows]
+                  "ban_reason": r[7], "disabled": bool(r[8]),
+                  "is_admin": bool(r[9]), "email_verified": bool(r[10])} for r in rows]
         return jsonify({"users":users,"count":len(users)})
+    except Exception as e:
+        return jsonify({"error":str(e)}),500
+
+@app.route("/admin/set_admin", methods=["POST","OPTIONS"])
+def admin_set_admin():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    ok, err = require_admin(d)
+    if not ok: return err
+    user_id  = d.get("user_id")
+    is_admin = bool(d.get("is_admin", True))
+    if not user_id:
+        return jsonify({"error":"user_id required"}),400
+    try:
+        conn = get_db()
+        # Prevent removing the last remaining admin so the panel never locks everyone out
+        if not is_admin:
+            count = conn.run("SELECT COUNT(*) FROM users WHERE is_admin=TRUE")[0][0]
+            target = conn.run("SELECT is_admin FROM users WHERE id=:uid", uid=user_id)
+            if target and target[0][0] and count <= 1:
+                conn.close()
+                return jsonify({"error":"Cannot remove the last remaining admin"}),400
+        rows = conn.run("UPDATE users SET is_admin=:a WHERE id=:uid RETURNING username,email,is_admin",
+                        a=is_admin, uid=user_id)
+        conn.close()
+        if not rows: return jsonify({"error":"User not found"}),404
+        return jsonify({"success": True, "updated":{"username":rows[0][0],"email":rows[0][1],"is_admin":bool(rows[0][2])}})
+    except Exception as e:
+        return jsonify({"error":str(e)}),500
+
+@app.route("/admin/resend_verification", methods=["POST","OPTIONS"])
+def admin_resend_verification():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    ok, err = require_admin(d)
+    if not ok: return err
+    user_id = d.get("user_id")
+    if not user_id:
+        return jsonify({"error":"user_id required"}),400
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT username,email,email_verified FROM users WHERE id=:uid", uid=user_id)
+        if not rows:
+            conn.close(); return jsonify({"error":"User not found"}),404
+        username, email, verified = rows[0]
+        if verified:
+            conn.close(); return jsonify({"error":"User is already verified"}),400
+        new_code = str(secrets.randbelow(900000) + 100000)
+        conn.run("UPDATE users SET verify_code=:c, verify_expires=NOW() + INTERVAL '15 minutes' WHERE id=:uid",
+                  c=new_code, uid=user_id)
+        conn.close()
+        send_verification_email(email, username, new_code)
+        return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error":str(e)}),500
 
