@@ -12,7 +12,39 @@ CORS(app, origins=["*"], supports_credentials=True)
 
 # ── Config ────────────────────────────────────────────────
 DATABASE_URL       = os.environ.get("DATABASE_URL", "")
-ADMIN_KEY          = os.environ.get("ADMIN_KEY", "")
+import requests as http_requests
+
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+EMAIL_FROM     = os.environ.get("EMAIL_FROM", "GeoAnalyzerX <noreply@geoanalyzerx.net>")
+
+def send_email(to, subject, html):
+    if not RESEND_API_KEY:
+        print("RESEND_API_KEY not set, skipping email send")
+        return False
+    try:
+        resp = http_requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={"from": EMAIL_FROM, "to": [to], "subject": subject, "html": html},
+            timeout=10
+        )
+        return resp.status_code in (200, 201)
+    except Exception as e:
+        print("Email send error:", e)
+        return False
+
+def send_verification_email(email, username, code):
+    html = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#08080f;color:#e0e0f0;border-radius:16px;">
+      <h1 style="color:#00c9a7;font-size:20px;">Verify your GeoAnalyzerX account</h1>
+      <p style="color:#8888aa;font-size:14px;">Hi {username}, use the code below to verify your email and activate your account.</p>
+      <div style="background:#1a1a2e;border:1px solid #2a2a3e;border-radius:12px;padding:20px;text-align:center;margin:20px 0;">
+        <div style="font-size:32px;font-weight:800;letter-spacing:8px;color:#00c9a7;">{code}</div>
+      </div>
+      <p style="color:#5a5a7a;font-size:12px;">This code expires in 15 minutes. If you didn't sign up for GeoAnalyzerX, you can ignore this email.</p>
+    </div>
+    """
+    return send_email(email, "Verify your GeoAnalyzerX account", html)
 FRONTEND_URL       = os.environ.get("FRONTEND_URL", "https://geoanalyzerx.net")
 SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -65,6 +97,9 @@ def init_db():
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN DEFAULT FALSE")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_code TEXT")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_expires TIMESTAMPTZ")
         except: pass
         conn.run("""CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY, user_id INT REFERENCES users(id),
@@ -201,18 +236,73 @@ def register():
     if len(password)<6: return jsonify({"error":"Password must be at least 6 characters"}),400
     try:
         conn  = get_db()
+        verify_code = str(secrets.randbelow(900000) + 100000)  # 6-digit code
         rows  = conn.run(
-            "INSERT INTO users (username,email,password) VALUES (:u,:e,:p) RETURNING id,username,email,tier",
-            u=username, e=email, p=hp(password))
+            """INSERT INTO users (username,email,password,verify_code,verify_expires)
+               VALUES (:u,:e,:p,:c,NOW() + INTERVAL '15 minutes')
+               RETURNING id,username,email,tier""",
+            u=username, e=email, p=hp(password), c=verify_code)
         user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3]}
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
         conn.close()
-        return jsonify({"token":token,"user":user}), 201
+        send_verification_email(email, username, verify_code)
+        return jsonify({"token":token,"user":user,"needs_verification":True}), 201
     except Exception as e:
         err = str(e)
         if "unique" in err.lower(): return jsonify({"error":"Username or email already taken"}),409
         return jsonify({"error": err}), 500
+
+@app.route("/auth/verify_email", methods=["POST", "OPTIONS"])
+def verify_email():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    code  = d.get("code", "").strip()
+    if not token or not code:
+        return jsonify({"error": "Token and code required"}), 400
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.verify_code, u.verify_expires, u.email_verified
+            FROM users u JOIN sessions s ON s.user_id=u.id
+            WHERE s.token=:t""", t=token)
+        if not rows:
+            conn.close(); return jsonify({"error": "Invalid session"}), 401
+        user_id, stored_code, expires, already_verified = rows[0]
+        if already_verified:
+            conn.close(); return jsonify({"success": True, "already_verified": True})
+        if not stored_code or stored_code != code:
+            conn.close(); return jsonify({"error": "Incorrect code"}), 400
+        if expires and str(expires) < str(conn.run("SELECT NOW()")[0][0]):
+            conn.close(); return jsonify({"error": "Code expired, please request a new one"}), 400
+        conn.run("UPDATE users SET email_verified=TRUE, verify_code=NULL WHERE id=:uid", uid=user_id)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/auth/resend_code", methods=["POST", "OPTIONS"])
+def resend_code():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.username, u.email, u.email_verified FROM users u
+            JOIN sessions s ON s.user_id=u.id WHERE s.token=:t""", t=token)
+        if not rows:
+            conn.close(); return jsonify({"error": "Invalid session"}), 401
+        user_id, username, email, verified = rows[0]
+        if verified:
+            conn.close(); return jsonify({"error": "Already verified"}), 400
+        new_code = str(secrets.randbelow(900000) + 100000)
+        conn.run("UPDATE users SET verify_code=:c, verify_expires=NOW() + INTERVAL '15 minutes' WHERE id=:uid",
+                  c=new_code, uid=user_id)
+        conn.close()
+        send_verification_email(email, username, new_code)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/auth/login", methods=["POST", "OPTIONS"])
 def login():
@@ -254,7 +344,7 @@ def verify():
     if not token: return jsonify({"valid":False}),401
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,u.banned_until,u.ban_reason FROM users u
+        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,u.banned_until,u.ban_reason,u.email_verified FROM users u
             JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
         conn.close()
@@ -266,7 +356,7 @@ def verify():
                 "banned_until": str(banned_until),
                 "ban_reason": rows[0][6] or "Violation of terms of service"
             }), 403
-        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4])}
+        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4]),"email_verified":bool(rows[0][7])}
         return jsonify({"valid":True,"user":user})
     except Exception as e:
         return jsonify({"valid":False,"error":str(e)}),500
