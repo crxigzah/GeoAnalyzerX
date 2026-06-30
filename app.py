@@ -132,6 +132,15 @@ def init_db():
         except: pass
         conn.run("CREATE INDEX IF NOT EXISTS idx_scenes_state ON scenes(state)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_scenes_country_region ON scenes(country, region)")
+        conn.run("""CREATE TABLE IF NOT EXISTS chat_logs (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            user_id INT REFERENCES users(id),
+            username TEXT,
+            correct_location TEXT,
+            guessed_location TEXT,
+            user_message TEXT NOT NULL,
+            ai_reply TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
         conn.close()
         print("DB init OK")
     except Exception as e:
@@ -1000,6 +1009,20 @@ The context you receive includes the CORRECT LOCATION, the dead giveaway clue, k
             "role": "user",
             "content": f"{last_analysis[:600]}\n\nPlayer: {message}"
         }], system=system, max_tokens=350)
+        # Log the exchange for admin review
+        try:
+            # Extract location context from last_analysis for the log
+            correct = next((l.replace('CORRECT LOCATION:', '').strip() for l in last_analysis.split('\n') if l.startswith('CORRECT LOCATION:')), '')
+            guessed = next((l.replace('THE PLAYER GUESSED:', '').replace('— THIS WAS WRONG.', '').strip() for l in last_analysis.split('\n') if l.startswith('THE PLAYER GUESSED:')), '')
+            log_conn = get_db()
+            urows = log_conn.run("SELECT username FROM users WHERE id=:uid", uid=user_id)
+            uname = urows[0][0] if urows else str(user_id)
+            log_conn.run("""INSERT INTO chat_logs (user_id, username, correct_location, guessed_location, user_message, ai_reply)
+                VALUES (:uid, :un, :cl, :gl, :msg, :reply)""",
+                uid=user_id, un=uname, cl=correct, gl=guessed, msg=message[:1000], reply=result[:2000])
+            log_conn.close()
+        except Exception as le:
+            print("Chat log error:", le)
         return jsonify({"reply": result})
     except Exception as e:
         return safe_error(e)
@@ -1546,7 +1569,23 @@ def admin_users():
     except Exception as e:
         return safe_error(e)
 
-@app.route("/admin/set_admin", methods=["POST","OPTIONS"])
+@app.route("/admin/chat_logs", methods=["GET","OPTIONS"])
+def admin_chat_logs():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    limit = min(int(request.args.get("limit", 100)), 500)
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT username, correct_location, guessed_location,
+            user_message, ai_reply, created_at
+            FROM chat_logs ORDER BY created_at DESC LIMIT :limit""", limit=limit)
+        conn.close()
+        logs = [{"username": r[0], "correct_location": r[1], "guessed_location": r[2],
+                 "user_message": r[3], "ai_reply": r[4], "created_at": str(r[5])} for r in rows]
+        return jsonify({"logs": logs, "count": len(logs)})
+    except Exception as e:
+        return safe_error(e)
 def admin_set_admin():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
