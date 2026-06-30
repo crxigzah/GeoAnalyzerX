@@ -528,12 +528,11 @@ def check_and_increment_usage(user_id, counter='analyses'):
             conn.close()
             return False, 0
         if rows:
-            conn.run(f"""UPDATE usage SET {counter}={counter}+1
+            conn.run(f"""UPDATE usage SET {counter} = {counter} + 1
                 WHERE user_id=:uid AND date=CURRENT_DATE""", uid=user_id)
         else:
-            conn.run(f"""INSERT INTO usage (user_id, {counter})
-                VALUES (:uid, 1)
-                ON CONFLICT (user_id, date) DO UPDATE SET {counter}={counter}+1""", uid=user_id)
+            conn.run(f"""INSERT INTO usage (user_id, date, {counter})
+                VALUES (:uid, CURRENT_DATE, 1)""", uid=user_id)
         conn.close()
         return True, FREE_DAILY_LIMIT - count - 1
     except Exception as e:
