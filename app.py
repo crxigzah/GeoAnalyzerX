@@ -237,12 +237,12 @@ def verify():
     if not token: return jsonify({"valid":False}),401
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier FROM users u
+        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at FROM users u
             JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
         conn.close()
         if not rows: return jsonify({"valid":False}),401
-        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3]}
+        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4])}
         return jsonify({"valid":True,"user":user})
     except Exception as e:
         return jsonify({"valid":False,"error":str(e)}),500
