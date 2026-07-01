@@ -1766,6 +1766,8 @@ def admin_list_country_metas():
         return jsonify({"guides": [{"iso":r[0],"country":r[1],"source":r[2],"updated_at":str(r[3])} for r in rows]})
     except Exception as e:
         return safe_error(e)
+
+@app.route("/admin/dashboard", methods=["GET","OPTIONS"])
 def admin_dashboard():
     """Single endpoint that returns everything the admin panel needs on load:
     stats, users, and recent logs. One round-trip instead of 4."""
