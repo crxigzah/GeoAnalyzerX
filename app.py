@@ -12,7 +12,7 @@ app = Flask(__name__)
 # Caps total request body size (generous for a base64-encoded screenshot,
 # but blocks someone sending an enormous payload to waste server resources,
 # inflate Supabase storage costs, or rack up Claude API costs).
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10 MB
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB for guide saves with images
 CORS(app, origins=[
     "https://geoanalyzerx.net",
     "https://www.geoanalyzerx.net",
@@ -1724,9 +1724,51 @@ Return ONLY valid JSON (no markdown, no backticks) in exactly this structure:
     except Exception as e:
         return safe_error(e)
 
+@app.route("/admin/upload_guide_image", methods=["POST","OPTIONS"])
+def admin_upload_guide_image():
+    """Upload a single image from the guide editor to Supabase Storage.
+    Images are uploaded immediately when added to a block so the guide save
+    payload only contains URLs, not base64 — essential for guides with
+    20-30+ images which would otherwise exceed any reasonable request limit."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    image_b64 = d.get("image", "")
+    iso = (d.get("iso") or "guide").strip().lower()
+    if not image_b64:
+        return jsonify({"error": "No image provided"}), 400
+    try:
+        if "," in image_b64:
+            header, image_b64 = image_b64.split(",", 1)
+            ext = "png" if "png" in header else "jpg"
+        else:
+            ext = "jpg"
+        img_bytes = base64.b64decode(image_b64)
+        r2_key = f"meta-guides/{iso}/{uuid.uuid4()}.{ext}"
+        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{r2_key}"
+        resp = http_requests.post(
+            upload_url,
+            headers={
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Content-Type": f"image/{ext}",
+                "x-upsert": "true"
+            },
+            data=img_bytes,
+            timeout=30
+        )
+        if resp.status_code not in (200, 201):
+            return jsonify({"error": f"Storage upload failed: {resp.status_code}"}), 500
+        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{r2_key}"
+        return jsonify({"url": url})
+    except Exception as e:
+        return safe_error(e)
+
 @app.route("/admin/country_meta", methods=["POST","OPTIONS"])
 def admin_save_country_meta():
-    """Save a manually written country guide from the admin panel."""
+    """Save a manually written country guide. By save time all images have
+    already been uploaded to Supabase Storage and replaced with URLs, so the
+    content is just text/URLs and stays well within DB limits."""
     if request.method == "OPTIONS": return jsonify({}), 200
     ok, err = require_admin()
     if not ok: return err
