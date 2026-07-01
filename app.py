@@ -172,6 +172,14 @@ def init_db():
         conn.run("CREATE INDEX IF NOT EXISTS idx_activity_logs_type ON activity_logs(event_type)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_activity_logs_time ON activity_logs(created_at DESC)")
+        conn.run("""CREATE TABLE IF NOT EXISTS country_metas (
+            iso TEXT PRIMARY KEY,
+            country TEXT,
+            content TEXT,
+            source TEXT DEFAULT 'ai',
+            last_edited_by TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW())""")
         conn.close()
         print("DB init OK")
     except Exception as e:
