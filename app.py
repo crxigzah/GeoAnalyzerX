@@ -1652,38 +1652,154 @@ def admin_users():
     except Exception as e:
         return safe_error(e)
 
-@app.route("/admin/events", methods=["GET"])
-def admin_events():
-    """Server-Sent Events stream for the admin panel. Pushes each new
-    activity_log entry to the browser the instant it's written, so the
-    admin panel updates in real time without polling."""
+@app.route("/ai/country_meta", methods=["POST", "OPTIONS"])
+def ai_country_meta():
+    """Generate or return cached GeoGuessr meta guide for a country."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    country = (d.get("country") or "").strip()
+    iso     = (d.get("iso") or "").strip().upper()
+    if not country:
+        return jsonify({"error": "country required"}), 400
+
+    # Check cache first (stored in activity_logs-adjacent table)
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT content FROM country_metas WHERE iso=:iso""", iso=iso)
+        if rows:
+            conn.close()
+            return jsonify(_json.loads(rows[0][0]))
+        conn.close()
+    except Exception:
+        pass  # table may not exist yet — we'll create it below
+
+    # Generate with Claude
+    prompt = f"""You are a world-class GeoGuessr expert. Generate a detailed meta guide for {country} in GeoGuessr.
+
+Return ONLY valid JSON (no markdown, no backticks) in exactly this structure:
+{{
+  "dead_giveaway": "The single most reliable visual clue that immediately identifies this country",
+  "visual_clues": [
+    {{"icon":"🌱","title":"Vegetation","detail":"Description of typical plants/trees"}},
+    {{"icon":"🛣️","title":"Roads","detail":"Road surface, markings, style"}},
+    {{"icon":"🏠","title":"Architecture","detail":"Building styles visible from street"}},
+    {{"icon":"🌄","title":"Terrain","detail":"Landscape and geography"}},
+    {{"icon":"🚦","title":"Signs","detail":"Road sign style, language, colors"}}
+  ],
+  "landscape": "2-3 sentences on the typical landscape, terrain variety, climate zones",
+  "road_meta": "2-3 sentences on road quality, markings, guardrail style, shoulder color",
+  "language_signs": "What script/language appears on signs, any unique lettering",
+  "vehicles": "Common car brands, license plate style, vehicle age typical",
+  "easy_to_confuse": [
+    {{"country":"Country Name","difference":"The ONE visual thing that separates them"}},
+    {{"country":"Country Name 2","difference":"The ONE visual thing that separates them"}}
+  ],
+  "pro_tips": "2-3 advanced tips that top GeoGuessr players use to identify this country quickly"
+}}"""
+
+    try:
+        result = call_claude([{"role":"user","content":prompt}], max_tokens=1200)
+        # Strip any accidental markdown fences
+        clean = result.strip()
+        if clean.startswith("```"):
+            clean = "\n".join(clean.split("\n")[1:])
+        if clean.endswith("```"):
+            clean = "\n".join(clean.split("\n")[:-1])
+        data = _json.loads(clean)
+
+        # Cache it
+        try:
+            conn = get_db()
+            conn.run("""CREATE TABLE IF NOT EXISTS country_metas (
+                iso TEXT PRIMARY KEY, country TEXT, content TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW())""")
+            conn.run("""INSERT INTO country_metas (iso, country, content)
+                VALUES (:iso, :country, :content)
+                ON CONFLICT (iso) DO UPDATE SET content=:content""",
+                iso=iso, country=country, content=_json.dumps(data))
+            conn.close()
+        except Exception as ce:
+            print("Country meta cache error:", ce)
+
+        return jsonify(data)
+    except Exception as e:
+        return safe_error(e)
+def admin_dashboard():
+    """Single endpoint that returns everything the admin panel needs on load:
+    stats, users, and recent logs. One round-trip instead of 4."""
+    if request.method == "OPTIONS": return jsonify({}), 200
     ok, err = require_admin()
     if not ok: return err
-    def stream():
-        q = queue.Queue(maxsize=100)
-        with _sse_lock:
-            _sse_subscribers.append(q)
-        try:
-            # Send a heartbeat comment every 25s to keep the connection alive
-            # through proxies/load balancers that close idle connections.
-            while True:
-                try:
-                    event = q.get(timeout=25)
-                    yield f"data: {_json.dumps(event)}\n\n"
-                except queue.Empty:
-                    yield ": heartbeat\n\n"
-        finally:
-            with _sse_lock:
-                if q in _sse_subscribers:
-                    _sse_subscribers.remove(q)
-    return Response(
-        stream_with_context(stream()),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # prevents Nginx from buffering the stream
-        }
-    )
+    try:
+        conn = get_db()
+        # Stats
+        total = conn.run("SELECT COUNT(*) FROM users")[0][0]
+        pro   = conn.run("SELECT COUNT(*) FROM users WHERE tier='pro'")[0][0]
+        today_rows = conn.run("""SELECT COALESCE(SUM(analyses),0), COALESCE(SUM(f7_captures),0),
+            COALESCE(SUM(teachings),0) FROM usage WHERE date=CURRENT_DATE""")
+        today_analyses = today_rows[0][0] if today_rows else 0
+        today_f7       = today_rows[0][1] if today_rows else 0
+        today_teachings= today_rows[0][2] if today_rows else 0
+        scene_count = conn.run("SELECT COUNT(*) FROM scenes")[0][0]
+        usage_today = conn.run("""SELECT u.username, u.tier, us.f7_captures, us.teachings, us.analyses
+            FROM usage us JOIN users u ON u.id=us.user_id
+            WHERE us.date=CURRENT_DATE ORDER BY (us.analyses+us.f7_captures+us.teachings) DESC LIMIT 20""")
+        # Users
+        users = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,
+            u.banned_until,u.ban_reason,u.email_verified,u.disabled,u.is_admin,
+            u.last_login FROM users u ORDER BY u.created_at DESC""")
+        # Recent activity logs
+        logs = conn.run("""SELECT event_type, user_id, username, detail, ip, created_at
+            FROM activity_logs ORDER BY created_at DESC LIMIT 200""")
+        # Recent chat logs
+        chats = conn.run("""SELECT username, correct_location, guessed_location,
+            user_message, ai_reply, created_at
+            FROM chat_logs ORDER BY created_at DESC LIMIT 100""")
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+
+    return jsonify({
+        "stats": {
+            "total_users": total, "pro_users": pro,
+            "today_analyses": today_analyses, "today_f7": today_f7,
+            "today_teachings": today_teachings, "scene_count": scene_count,
+            "usage_today": [{"username":r[0],"tier":r[1],"f7":r[2],"guides":r[3],"analyses":r[4]} for r in usage_today]
+        },
+        "users": [{"id":r[0],"username":r[1],"email":r[2],"tier":r[3],
+                   "created_at":str(r[4]),"banned_until":str(r[5]) if r[5] else None,
+                   "ban_reason":r[6],"email_verified":r[7],"disabled":r[8],
+                   "is_admin":r[9],"last_login":str(r[10]) if r[10] else None} for r in users],
+        "logs": [{"event_type":r[0],"user_id":r[1],"username":r[2],
+                  "detail":r[3],"ip":r[4],"created_at":str(r[5])} for r in logs],
+        "chats": [{"username":r[0],"correct_location":r[1],"guessed_location":r[2],
+                   "user_message":r[3],"ai_reply":r[4],"created_at":str(r[5])} for r in chats]
+    })
+
+@app.route("/admin/poll", methods=["GET","OPTIONS"])
+def admin_poll():
+    """Lightweight incremental poll — only returns activity_log rows newer
+    than the 'since' timestamp. Called every 3 seconds by the admin panel.
+    Returns almost nothing when idle, so it's fast and cheap."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    since = request.args.get("since", "")
+    try:
+        conn = get_db()
+        if since:
+            rows = conn.run("""SELECT event_type, user_id, username, detail, ip, created_at
+                FROM activity_logs WHERE created_at > :since
+                ORDER BY created_at ASC""", since=since)
+        else:
+            rows = conn.run("""SELECT event_type, user_id, username, detail, ip, created_at
+                FROM activity_logs ORDER BY created_at DESC LIMIT 1""")
+        conn.close()
+        events = [{"event_type":r[0],"user_id":r[1],"username":r[2],
+                   "detail":r[3],"ip":r[4],"created_at":str(r[5])} for r in rows]
+        return jsonify({"events": events})
+    except Exception as e:
+        return safe_error(e)
 
 @app.route("/admin/activity_logs", methods=["GET","OPTIONS"])
 def admin_activity_logs():
