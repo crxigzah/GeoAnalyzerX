@@ -1806,6 +1806,20 @@ def admin_save_country_meta():
     except Exception as e:
         return safe_error(e)
 
+@app.route("/admin/country_meta/<iso>", methods=["DELETE","OPTIONS"])
+def admin_delete_country_meta(iso):
+    """Delete a country guide by ISO code."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        conn.run("DELETE FROM country_metas WHERE iso=:iso", iso=iso.upper())
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
 @app.route("/admin/country_metas", methods=["GET","OPTIONS"])
 def admin_list_country_metas():
     """List all saved country guides for the admin panel."""
