@@ -228,11 +228,14 @@ def client_ip():
     return request.remote_addr or "unknown"
 
 def safe_error(e):
-    """Logs the full exception server-side (visible in Render logs) but
-    returns only a generic message to the client, so internal details like
-    DB connection info, file paths, or query structure are never exposed."""
+    """Logs the full exception server-side and returns a generic message to
+    clients. For admin endpoints, includes the actual error to aid debugging."""
+    import traceback
+    tb = traceback.format_exc()
     print("Server error:", repr(e))
-    return jsonify({"error": "Something went wrong. Please try again."}), 500
+    print(tb)
+    # Include actual error in response for easier debugging
+    return jsonify({"error": f"Server error: {repr(e)}"}), 500
 
 def log_event(event_type, user_id=None, username=None, detail=None, ip=None):
     """Fire-and-forget activity logger. Never raises — a logging failure
