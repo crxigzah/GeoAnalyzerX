@@ -1654,7 +1654,8 @@ def admin_users():
 
 @app.route("/ai/country_meta", methods=["POST", "OPTIONS"])
 def ai_country_meta():
-    """Generate or return cached GeoGuessr meta guide for a country."""
+    """Return cached or AI-generated GeoGuessr meta guide for a country.
+    Manual guides (written via admin panel) take priority over AI-generated ones."""
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
     country = (d.get("country") or "").strip()
@@ -1662,18 +1663,23 @@ def ai_country_meta():
     if not country:
         return jsonify({"error": "country required"}), 400
 
-    # Check cache first (stored in activity_logs-adjacent table)
     try:
         conn = get_db()
-        rows = conn.run("""SELECT content FROM country_metas WHERE iso=:iso""", iso=iso)
-        if rows:
-            conn.close()
-            return jsonify(_json.loads(rows[0][0]))
+        conn.run("""CREATE TABLE IF NOT EXISTS country_metas (
+            iso TEXT PRIMARY KEY, country TEXT, content TEXT,
+            source TEXT DEFAULT 'ai', last_edited_by TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        rows = conn.run("SELECT content, source FROM country_metas WHERE iso=:iso", iso=iso)
         conn.close()
-    except Exception:
-        pass  # table may not exist yet — we'll create it below
+        if rows:
+            data = _json.loads(rows[0][0])
+            data['_source'] = rows[0][1] or 'ai'
+            return jsonify(data)
+    except Exception as e:
+        print("country_meta cache error:", e)
 
-    # Generate with Claude
+    # No cached guide — generate with Claude
     prompt = f"""You are a world-class GeoGuessr expert. Generate a detailed meta guide for {country} in GeoGuessr.
 
 Return ONLY valid JSON (no markdown, no backticks) in exactly this structure:
@@ -1699,29 +1705,65 @@ Return ONLY valid JSON (no markdown, no backticks) in exactly this structure:
 
     try:
         result = call_claude([{"role":"user","content":prompt}], max_tokens=1200)
-        # Strip any accidental markdown fences
         clean = result.strip()
-        if clean.startswith("```"):
-            clean = "\n".join(clean.split("\n")[1:])
-        if clean.endswith("```"):
-            clean = "\n".join(clean.split("\n")[:-1])
+        if clean.startswith("```"): clean = "\n".join(clean.split("\n")[1:])
+        if clean.endswith("```"):   clean = "\n".join(clean.split("\n")[:-1])
         data = _json.loads(clean)
-
-        # Cache it
+        data['_source'] = 'ai'
         try:
             conn = get_db()
-            conn.run("""CREATE TABLE IF NOT EXISTS country_metas (
-                iso TEXT PRIMARY KEY, country TEXT, content TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW())""")
-            conn.run("""INSERT INTO country_metas (iso, country, content)
-                VALUES (:iso, :country, :content)
-                ON CONFLICT (iso) DO UPDATE SET content=:content""",
+            conn.run("""INSERT INTO country_metas (iso, country, content, source)
+                VALUES (:iso, :country, :content, 'ai')
+                ON CONFLICT (iso) DO UPDATE SET content=:content, updated_at=NOW()
+                WHERE country_metas.source='ai'""",
                 iso=iso, country=country, content=_json.dumps(data))
             conn.close()
         except Exception as ce:
-            print("Country meta cache error:", ce)
-
+            print("Country meta cache save error:", ce)
         return jsonify(data)
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/country_meta", methods=["POST","OPTIONS"])
+def admin_save_country_meta():
+    """Save a manually written country guide from the admin panel."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    iso     = (d.get("iso") or "").strip().upper()
+    country = (d.get("country") or "").strip()
+    content = d.get("content")
+    if not iso or not country or not content:
+        return jsonify({"error": "iso, country and content required"}), 400
+    try:
+        conn = get_db()
+        conn.run("""CREATE TABLE IF NOT EXISTS country_metas (
+            iso TEXT PRIMARY KEY, country TEXT, content TEXT,
+            source TEXT DEFAULT 'ai', last_edited_by TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("""INSERT INTO country_metas (iso, country, content, source)
+            VALUES (:iso, :country, :content, 'manual')
+            ON CONFLICT (iso) DO UPDATE SET
+                content=:content, source='manual', updated_at=NOW()""",
+            iso=iso, country=country, content=_json.dumps(content))
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/country_metas", methods=["GET","OPTIONS"])
+def admin_list_country_metas():
+    """List all saved country guides for the admin panel."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT iso, country, source, updated_at FROM country_metas ORDER BY country ASC")
+        conn.close()
+        return jsonify({"guides": [{"iso":r[0],"country":r[1],"source":r[2],"updated_at":str(r[3])} for r in rows]})
     except Exception as e:
         return safe_error(e)
 def admin_dashboard():
