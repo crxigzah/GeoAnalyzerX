@@ -1761,7 +1761,7 @@ def admin_upload_guide_image():
         resp = http_requests.post(
             upload_url,
             headers={
-                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Authorization": f"Bearer {SUPABASE_KEY}",
                 "Content-Type": f"image/{ext}",
                 "x-upsert": "true"
             },
