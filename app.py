@@ -1818,13 +1818,14 @@ def admin_users():
     if not ok: return err
     try:
         conn  = get_db()
-        rows  = conn.run("SELECT id,username,email,tier,created_at,last_login,banned_until,ban_reason,disabled,is_admin,email_verified FROM users ORDER BY created_at DESC")
+        rows  = conn.run("SELECT id,username,email,tier,created_at,last_login,banned_until,ban_reason,disabled,is_admin,email_verified,phone_number,phone_verified FROM users ORDER BY created_at DESC")
         conn.close()
         users = [{"id":r[0],"username":r[1],"email":r[2],"tier":r[3],
                   "created_at":str(r[4]),"last_login":str(r[5]),
                   "banned_until": str(r[6]) if r[6] else None,
                   "ban_reason": r[7], "disabled": bool(r[8]),
-                  "is_admin": bool(r[9]), "email_verified": bool(r[10])} for r in rows]
+                  "is_admin": bool(r[9]), "email_verified": bool(r[10]),
+                  "phone_number": r[11], "phone_verified": bool(r[12])} for r in rows]
         return jsonify({"users":users,"count":len(users)})
     except Exception as e:
         return safe_error(e)
@@ -2170,7 +2171,96 @@ def admin_resend_verification():
     except Exception as e:
         return safe_error(e)
 
-# ── Stripe ────────────────────────────────────────────────
+@app.route("/admin/resend_phone_verification", methods=["POST","OPTIONS"])
+def admin_resend_phone_verification():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    ok, err = require_admin()
+    if not ok: return err
+    user_id = d.get("user_id")
+    if not user_id:
+        return jsonify({"error":"user_id required"}),400
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT username,phone_number,phone_verified FROM users WHERE id=:uid", uid=user_id)
+        conn.close()
+        if not rows:
+            return jsonify({"error":"User not found"}),404
+        username, phone_number, verified = rows[0]
+        if verified:
+            return jsonify({"error":"User is already phone-verified"}),400
+        if not phone_number:
+            return jsonify({"error":"This account has no phone number on file"}),400
+        if not TWILIO_CONFIGURED:
+            return jsonify({"error":"Twilio is not configured on the server"}),503
+        if not send_phone_verification(phone_number):
+            return jsonify({"error":"Couldn't send SMS right now. Please try again shortly."}),502
+        log_event("admin_resend_phone", user_id=user_id, username=username, ip=client_ip())
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/set_phone_verified", methods=["POST","OPTIONS"])
+def admin_set_phone_verified():
+    """Manually mark (or unmark) an account's phone as verified — for support
+    cases where SMS delivery is unreliable (e.g. certain countries/carriers)
+    and an admin has confirmed the number by other means."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    ok, err = require_admin()
+    if not ok: return err
+    user_id  = d.get("user_id")
+    verified = bool(d.get("verified", True))
+    if not user_id:
+        return jsonify({"error":"user_id required"}),400
+    try:
+        conn = get_db()
+        urows = conn.run("SELECT username FROM users WHERE id=:uid", uid=user_id)
+        if not urows:
+            conn.close(); return jsonify({"error":"User not found"}),404
+        target_username = urows[0][0]
+        conn.run("UPDATE users SET phone_verified=:v WHERE id=:uid", v=verified, uid=user_id)
+        conn.close()
+        log_event("admin_set_phone_verified", user_id=user_id, username=target_username,
+                   detail=f"verified={verified}", ip=client_ip())
+        return jsonify({"success": True, "phone_verified": verified})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/set_phone_number", methods=["POST","OPTIONS"])
+def admin_set_phone_number():
+    """Add or correct a user's phone number from the admin panel. Setting a
+    new number resets phone_verified to False (a new number hasn't been
+    proven to belong to this user yet) unless verified=True is passed
+    explicitly alongside it."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    ok, err = require_admin()
+    if not ok: return err
+    user_id      = d.get("user_id")
+    phone_number = (d.get("phone_number") or "").strip()
+    mark_verified = bool(d.get("verified", False))
+    if not user_id:
+        return jsonify({"error":"user_id required"}),400
+    if not is_valid_e164(phone_number):
+        return jsonify({"error":"Enter a valid phone number in international format, e.g. +61412345678"}),400
+    try:
+        conn = get_db()
+        urows = conn.run("SELECT username FROM users WHERE id=:uid", uid=user_id)
+        if not urows:
+            conn.close(); return jsonify({"error":"User not found"}),404
+        target_username = urows[0][0]
+        conn.run("UPDATE users SET phone_number=:p, phone_verified=:v WHERE id=:uid",
+                  p=phone_number, v=mark_verified, uid=user_id)
+        conn.close()
+        log_event("admin_set_phone_number", user_id=user_id, username=target_username,
+                   detail=f"phone={phone_number}", ip=client_ip())
+        return jsonify({"success": True, "phone_number": phone_number, "phone_verified": mark_verified})
+    except Exception as e:
+        err = str(e)
+        if "unique" in err.lower():
+            return jsonify({"error":"This phone number is already registered to another account"}),409
+        return safe_error(e)
 @app.route("/stripe/create-checkout", methods=["POST", "OPTIONS"])
 def create_checkout():
     if request.method == "OPTIONS": return jsonify({}), 200
