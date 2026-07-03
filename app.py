@@ -463,10 +463,11 @@ def register():
         rows  = conn.run(
             """INSERT INTO users (username,email,password,verify_code,verify_expires,phone_number,phone_verified)
                VALUES (:u,:e,:p,:c,NOW() + INTERVAL '15 minutes',:ph,:pv)
-               RETURNING id,username,email,tier""",
+               RETURNING id,username,email,tier,phone_number,phone_verified""",
             u=username, e=email, p=hash_password(password), c=verify_code,
             ph=phone_number, pv=initial_phone_verified)
-        user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3]}
+        user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],
+                  "phone_number":rows[0][4],"phone_verified":bool(rows[0][5])}
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
         conn.close()
@@ -687,7 +688,7 @@ def login():
     try:
         conn = get_db()
         rows = conn.run("""SELECT id,username,email,tier,banned_until,ban_reason,disabled,email_verified,
-                            password,totp_enabled,totp_secret,phone_verified FROM users WHERE email=:e""", e=email)
+                            password,totp_enabled,totp_secret,phone_verified,phone_number FROM users WHERE email=:e""", e=email)
         if not rows or not verify_password(rows[0][8], password):
             conn.close()
             log_event("login_failed", detail=f"email={email}", ip=client_ip())
@@ -721,7 +722,8 @@ def login():
             if not pyotp.TOTP(totp_secret).verify(totp_code, valid_window=1):
                 conn.close()
                 return jsonify({"error": "Invalid 2FA code", "code": "totp_invalid"}), 401
-        user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3]}
+        user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],
+                  "phone_number":rows[0][12],"phone_verified":bool(rows[0][11])}
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
         conn.run("UPDATE users SET last_login=NOW() WHERE id=:uid", uid=user["id"])
@@ -758,7 +760,7 @@ def verify():
     if not token: return jsonify({"valid":False}),401
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,u.banned_until,u.ban_reason,u.email_verified,u.phone_verified FROM users u
+        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,u.banned_until,u.ban_reason,u.email_verified,u.phone_verified,u.phone_number FROM users u
             JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
         conn.close()
@@ -770,7 +772,7 @@ def verify():
                 "banned_until": str(banned_until),
                 "ban_reason": rows[0][6] or "Violation of terms of service"
             }), 403
-        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4]),"email_verified":bool(rows[0][7]),"phone_verified":bool(rows[0][8])}
+        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4]),"email_verified":bool(rows[0][7]),"phone_verified":bool(rows[0][8]),"phone_number":rows[0][9]}
         return jsonify({"valid":True,"user":user})
     except Exception as e:
         print("Server error:", repr(e))
