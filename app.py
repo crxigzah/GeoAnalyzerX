@@ -185,6 +185,15 @@ def init_db():
         try:
             conn.run("ALTER TABLE users ADD CONSTRAINT users_phone_number_key UNIQUE (phone_number)")
         except: pass
+        # Grandfather accounts that predate the phone_number column — any row
+        # with phone_number IS NULL can only be a legacy account, since every
+        # registration after this feature shipped always sets one. Without
+        # this, those accounts would be locked out permanently (can't verify
+        # a number they don't have, can't log in to add one). Safe to run on
+        # every startup: has zero effect once all legacy rows are caught up.
+        try:
+            conn.run("UPDATE users SET phone_verified=TRUE WHERE phone_number IS NULL AND phone_verified=FALSE")
+        except: pass
         conn.run("""CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY, user_id INT REFERENCES users(id),
             created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -496,12 +505,12 @@ def verify_email():
         return jsonify({"error": "Too many attempts. Please request a new code and try again shortly."}), 429
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id, u.verify_code, u.verify_expires, u.email_verified, u.phone_verified
+        rows = conn.run("""SELECT u.id, u.verify_code, u.verify_expires, u.email_verified, u.phone_verified, u.username
             FROM users u JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t""", t=token)
         if not rows:
             conn.close(); return jsonify({"error": "Invalid session"}), 401
-        user_id, stored_code, expires, already_verified, phone_verified = rows[0]
+        user_id, stored_code, expires, already_verified, phone_verified, username = rows[0]
         if already_verified:
             conn.close(); return jsonify({"success": True, "already_verified": True, "needs_phone_verification": not phone_verified})
         if not stored_code or stored_code != code:
@@ -510,7 +519,7 @@ def verify_email():
             conn.close(); return jsonify({"error": "Code expired, please request a new one"}), 400
         conn.run("UPDATE users SET email_verified=TRUE, verify_code=NULL WHERE id=:uid", uid=user_id)
         conn.close()
-        log_event("email_verified", user_id=user_id, ip=client_ip())
+        log_event("email_verified", user_id=user_id, username=username, ip=client_ip())
         return jsonify({"success": True, "needs_phone_verification": not phone_verified})
     except Exception as e:
         return safe_error(e)
@@ -589,12 +598,12 @@ def verify_phone():
         return jsonify({"error": "Too many attempts. Please request a new code and try again shortly."}), 429
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id, u.phone_number, u.phone_verified
+        rows = conn.run("""SELECT u.id, u.phone_number, u.phone_verified, u.username
             FROM users u JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t""", t=token)
         if not rows:
             conn.close(); return jsonify({"error": "Invalid session"}), 401
-        user_id, phone_number, already_verified = rows[0]
+        user_id, phone_number, already_verified, username = rows[0]
         if already_verified:
             conn.close(); return jsonify({"success": True, "already_verified": True})
         if not phone_number:
@@ -603,7 +612,7 @@ def verify_phone():
             conn.close(); return jsonify({"error": "Incorrect or expired code"}), 400
         conn.run("UPDATE users SET phone_verified=TRUE WHERE id=:uid", uid=user_id)
         conn.close()
-        log_event("phone_verified", user_id=user_id, ip=client_ip())
+        log_event("phone_verified", user_id=user_id, username=username, ip=client_ip())
         return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
@@ -702,7 +711,7 @@ def login():
         if not rows[0][7]:
             conn.close()
             return jsonify({"error": "Please verify your email before logging in", "code": "unverified"}), 403
-        if TWILIO_CONFIGURED and not rows[0][11]:
+        if TWILIO_CONFIGURED and rows[0][12] and not rows[0][11]:
             conn.close()
             return jsonify({"error": "Please verify your phone number before logging in", "code": "phone_unverified"}), 403
         banned_until = rows[0][4]
@@ -2263,6 +2272,36 @@ def admin_set_phone_number():
         if "unique" in err.lower():
             return jsonify({"error":"This phone number is already registered to another account"}),409
         return safe_error(e)
+
+@app.route("/admin/reset_phone", methods=["POST","OPTIONS"])
+def admin_reset_phone():
+    """Clears a user's phone number and resets phone_verified to False —
+    e.g. for a number that was entered wrong, is no longer theirs, or needs
+    a completely fresh start. Since the login gate only blocks when a
+    phone_number is on file (see login()), clearing both together rather
+    than just the verified flag avoids leaving the account in a locked-out
+    state where it has an unverified number it has no way to fix itself."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    ok, err = require_admin()
+    if not ok: return err
+    user_id = d.get("user_id")
+    if not user_id:
+        return jsonify({"error":"user_id required"}),400
+    try:
+        conn = get_db()
+        urows = conn.run("SELECT username FROM users WHERE id=:uid", uid=user_id)
+        if not urows:
+            conn.close(); return jsonify({"error":"User not found"}),404
+        target_username = urows[0][0]
+        conn.run("UPDATE users SET phone_number=NULL, phone_verified=FALSE WHERE id=:uid", uid=user_id)
+        conn.close()
+        log_event("admin_reset_phone", user_id=user_id, username=target_username, ip=client_ip())
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+# ── Stripe ────────────────────────────────────────────────
 @app.route("/stripe/create-checkout", methods=["POST", "OPTIONS"])
 def create_checkout():
     if request.method == "OPTIONS": return jsonify({}), 200
