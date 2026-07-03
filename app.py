@@ -96,6 +96,59 @@ print(f"Stripe key loaded: {'YES' if stripe.api_key else 'MISSING'}")
 print(f"Stripe price ID:   {'YES' if STRIPE_PRO_PRICE_ID else 'MISSING'}")
 print(f"Stripe webhook:    {'YES' if STRIPE_WEBHOOK_SECRET else 'MISSING'}")
 
+# ── Twilio (phone verification) ──────────────────────────────
+try:
+    from twilio.rest import Client as TwilioClient
+    from twilio.base.exceptions import TwilioRestException
+except ImportError:
+    TwilioClient = None
+    TwilioRestException = Exception
+    print("twilio package not installed — run: pip install twilio")
+
+TWILIO_ACCOUNT_SID        = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN         = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_VERIFY_SERVICE_SID = os.environ.get("TWILIO_VERIFY_SERVICE_SID", "")
+
+_twilio_client = None
+if TwilioClient and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+    _twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+# If Twilio isn't fully configured, phone verification is treated as
+# not-required anywhere below — this prevents locking every signup out
+# behind a code that can never actually be sent. Once the env vars are
+# set, enforcement turns on automatically without a code change.
+TWILIO_CONFIGURED = bool(_twilio_client and TWILIO_VERIFY_SERVICE_SID)
+print(f"Twilio configured: {'YES' if TWILIO_CONFIGURED else 'MISSING (phone verification disabled)'}")
+
+def is_valid_e164(phone):
+    """Basic E.164 check: + followed by 7-15 digits, no spaces/dashes."""
+    return bool(re.match(r'^\+[1-9]\d{6,14}$', phone or ""))
+
+def send_phone_verification(phone_number):
+    """Sends an SMS verification code via Twilio Verify. Returns True/False."""
+    if not TWILIO_CONFIGURED:
+        print("Twilio not configured, skipping SMS send")
+        return False
+    try:
+        _twilio_client.verify.v2.services(TWILIO_VERIFY_SERVICE_SID) \
+            .verifications.create(to=phone_number, channel="sms")
+        return True
+    except TwilioRestException as e:
+        print("Twilio send error:", e)
+        return False
+
+def check_phone_verification(phone_number, code):
+    """Checks a submitted code against Twilio Verify. Returns True/False."""
+    if not TWILIO_CONFIGURED:
+        return False
+    try:
+        check = _twilio_client.verify.v2.services(TWILIO_VERIFY_SERVICE_SID) \
+            .verification_checks.create(to=phone_number, code=code)
+        return check.status == "approved"
+    except TwilioRestException as e:
+        print("Twilio check error:", e)
+        return False
+
 
 # ── DB ────────────────────────────────────────────────────
 def get_db():
@@ -126,6 +179,11 @@ def init_db():
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_code TEXT")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_expires TIMESTAMPTZ")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE")
+        except: pass
+        try:
+            conn.run("ALTER TABLE users ADD CONSTRAINT users_phone_number_key UNIQUE (phone_number)")
         except: pass
         conn.run("""CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY, user_id INT REFERENCES users(id),
@@ -382,9 +440,10 @@ def health():
 def register():
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    username = d.get("username","").strip()
-    email    = d.get("email","").strip().lower()
-    password = d.get("password","")
+    username     = d.get("username","").strip()
+    email        = d.get("email","").strip().lower()
+    password     = d.get("password","")
+    phone_number = d.get("phone_number","").strip()
     if rate_limited("register_ip", client_ip(), max_attempts=10, window_seconds=3600):
         return jsonify({"error": "Too many accounts created from this network. Try again later."}), 429
     if len(username)<3: return jsonify({"error":"Username must be at least 3 characters"}),400
@@ -393,24 +452,35 @@ def register():
         return jsonify({"error":"Username can only contain letters, numbers, and underscores"}),400
     if "@" not in email: return jsonify({"error":"Invalid email"}),400
     if len(password)<6: return jsonify({"error":"Password must be at least 6 characters"}),400
+    if not is_valid_e164(phone_number):
+        return jsonify({"error":"Enter a valid phone number in international format, e.g. +61412345678"}),400
     try:
         conn  = get_db()
         verify_code = str(secrets.randbelow(900000) + 100000)  # 6-digit code
+        # If Twilio isn't configured, don't gate the account behind a code
+        # that can never arrive — mark phone as verified immediately instead.
+        initial_phone_verified = not TWILIO_CONFIGURED
         rows  = conn.run(
-            """INSERT INTO users (username,email,password,verify_code,verify_expires)
-               VALUES (:u,:e,:p,:c,NOW() + INTERVAL '15 minutes')
+            """INSERT INTO users (username,email,password,verify_code,verify_expires,phone_number,phone_verified)
+               VALUES (:u,:e,:p,:c,NOW() + INTERVAL '15 minutes',:ph,:pv)
                RETURNING id,username,email,tier""",
-            u=username, e=email, p=hash_password(password), c=verify_code)
+            u=username, e=email, p=hash_password(password), c=verify_code,
+            ph=phone_number, pv=initial_phone_verified)
         user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3]}
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
         conn.close()
         send_verification_email(email, username, verify_code)
+        if TWILIO_CONFIGURED:
+            send_phone_verification(phone_number)
         log_event("register", user_id=user["id"], username=username, detail=f"email={email}", ip=client_ip())
         return jsonify({"token":token,"user":user,"needs_verification":True}), 201
     except Exception as e:
         err = str(e)
-        if "unique" in err.lower(): return jsonify({"error":"Username or email already taken"}),409
+        if "unique" in err.lower():
+            if "phone_number" in err.lower():
+                return jsonify({"error":"This phone number is already registered to another account"}),409
+            return jsonify({"error":"Username or email already taken"}),409
         return safe_error(e)
 
 @app.route("/auth/verify_email", methods=["POST", "OPTIONS"])
@@ -425,14 +495,14 @@ def verify_email():
         return jsonify({"error": "Too many attempts. Please request a new code and try again shortly."}), 429
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id, u.verify_code, u.verify_expires, u.email_verified
+        rows = conn.run("""SELECT u.id, u.verify_code, u.verify_expires, u.email_verified, u.phone_verified
             FROM users u JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t""", t=token)
         if not rows:
             conn.close(); return jsonify({"error": "Invalid session"}), 401
-        user_id, stored_code, expires, already_verified = rows[0]
+        user_id, stored_code, expires, already_verified, phone_verified = rows[0]
         if already_verified:
-            conn.close(); return jsonify({"success": True, "already_verified": True})
+            conn.close(); return jsonify({"success": True, "already_verified": True, "needs_phone_verification": not phone_verified})
         if not stored_code or stored_code != code:
             conn.close(); return jsonify({"error": "Incorrect code"}), 400
         if expires and str(expires) < str(conn.run("SELECT NOW()")[0][0]):
@@ -440,7 +510,7 @@ def verify_email():
         conn.run("UPDATE users SET email_verified=TRUE, verify_code=NULL WHERE id=:uid", uid=user_id)
         conn.close()
         log_event("email_verified", user_id=user_id, ip=client_ip())
-        return jsonify({"success": True})
+        return jsonify({"success": True, "needs_phone_verification": not phone_verified})
     except Exception as e:
         return safe_error(e)
 
@@ -506,6 +576,99 @@ def request_verification():
     except Exception as e:
         return safe_error(e)
 
+@app.route("/auth/verify_phone", methods=["POST", "OPTIONS"])
+def verify_phone():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    code  = d.get("code", "").strip()
+    if not token or not code:
+        return jsonify({"error": "Token and code required"}), 400
+    if rate_limited("verify_phone", token, max_attempts=8, window_seconds=900):
+        return jsonify({"error": "Too many attempts. Please request a new code and try again shortly."}), 429
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.phone_number, u.phone_verified
+            FROM users u JOIN sessions s ON s.user_id=u.id
+            WHERE s.token=:t""", t=token)
+        if not rows:
+            conn.close(); return jsonify({"error": "Invalid session"}), 401
+        user_id, phone_number, already_verified = rows[0]
+        if already_verified:
+            conn.close(); return jsonify({"success": True, "already_verified": True})
+        if not phone_number:
+            conn.close(); return jsonify({"error": "No phone number on file for this account"}), 400
+        if not check_phone_verification(phone_number, code):
+            conn.close(); return jsonify({"error": "Incorrect or expired code"}), 400
+        conn.run("UPDATE users SET phone_verified=TRUE WHERE id=:uid", uid=user_id)
+        conn.close()
+        log_event("phone_verified", user_id=user_id, ip=client_ip())
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/auth/resend_phone_code", methods=["POST", "OPTIONS"])
+def resend_phone_code():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    if not token:
+        return jsonify({"error": "Invalid session"}), 401
+    if rate_limited("resend_phone_code", token, max_attempts=3, window_seconds=600):
+        return jsonify({"error": "Please wait a few minutes before requesting another code."}), 429
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.id, u.phone_number, u.phone_verified FROM users u
+            JOIN sessions s ON s.user_id=u.id WHERE s.token=:t""", t=token)
+        if not rows:
+            conn.close(); return jsonify({"error": "Invalid session"}), 401
+        user_id, phone_number, verified = rows[0]
+        conn.close()
+        if verified:
+            return jsonify({"error": "Already verified"}), 400
+        if not phone_number:
+            return jsonify({"error": "No phone number on file for this account"}), 400
+        if not send_phone_verification(phone_number):
+            return jsonify({"error": "Couldn't send SMS right now. Please try again shortly."}), 502
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/auth/request_phone_verification", methods=["POST", "OPTIONS"])
+def request_phone_verification():
+    """Mirrors request_verification() but for the phone-verification step —
+    for accounts that verified email but never finished phone verification
+    and are now stuck with no way back into the code-entry screen."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    email    = d.get("email","").strip().lower()
+    password = d.get("password","")
+    if rate_limited("request_phone_verification_ip", client_ip(), max_attempts=10, window_seconds=600):
+        return jsonify({"error": "Too many attempts. Try again later."}), 429
+    if email and rate_limited("request_phone_verification_email", email, max_attempts=5, window_seconds=600):
+        return jsonify({"error": "Too many attempts for this account. Try again later."}), 429
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT id,username,email,tier,password,email_verified,phone_number,phone_verified
+            FROM users WHERE email=:e""", e=email)
+        if not rows or not verify_password(rows[0][4], password):
+            conn.close(); return jsonify({"error":"Invalid email or password"}),401
+        user_id, username, email, tier, _, email_verified, phone_number, phone_verified = rows[0]
+        if not email_verified:
+            conn.close(); return jsonify({"error":"Please verify your email first.", "code":"unverified"}), 400
+        if phone_verified:
+            conn.close(); return jsonify({"error":"This account is already verified. Try signing in normally."}), 400
+        if not phone_number:
+            conn.close(); return jsonify({"error":"No phone number on file for this account."}), 400
+        token = secrets.token_urlsafe(32)
+        conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user_id)
+        conn.close()
+        send_phone_verification(phone_number)
+        user = {"id": user_id, "username": username, "email": email, "tier": tier}
+        return jsonify({"token": token, "user": user, "needs_phone_verification": True})
+    except Exception as e:
+        return safe_error(e)
+
 @app.route("/auth/login", methods=["POST", "OPTIONS"])
 def login():
     if request.method == "OPTIONS": return jsonify({}), 200
@@ -524,7 +687,7 @@ def login():
     try:
         conn = get_db()
         rows = conn.run("""SELECT id,username,email,tier,banned_until,ban_reason,disabled,email_verified,
-                            password,totp_enabled,totp_secret FROM users WHERE email=:e""", e=email)
+                            password,totp_enabled,totp_secret,phone_verified FROM users WHERE email=:e""", e=email)
         if not rows or not verify_password(rows[0][8], password):
             conn.close()
             log_event("login_failed", detail=f"email={email}", ip=client_ip())
@@ -538,6 +701,9 @@ def login():
         if not rows[0][7]:
             conn.close()
             return jsonify({"error": "Please verify your email before logging in", "code": "unverified"}), 403
+        if TWILIO_CONFIGURED and not rows[0][11]:
+            conn.close()
+            return jsonify({"error": "Please verify your phone number before logging in", "code": "phone_unverified"}), 403
         banned_until = rows[0][4]
         if banned_until and str(banned_until) != 'None':
             conn.close()
@@ -592,7 +758,7 @@ def verify():
     if not token: return jsonify({"valid":False}),401
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,u.banned_until,u.ban_reason,u.email_verified FROM users u
+        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,u.banned_until,u.ban_reason,u.email_verified,u.phone_verified FROM users u
             JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
         conn.close()
@@ -604,7 +770,7 @@ def verify():
                 "banned_until": str(banned_until),
                 "ban_reason": rows[0][6] or "Violation of terms of service"
             }), 403
-        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4]),"email_verified":bool(rows[0][7])}
+        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4]),"email_verified":bool(rows[0][7]),"phone_verified":bool(rows[0][8])}
         return jsonify({"valid":True,"user":user})
     except Exception as e:
         print("Server error:", repr(e))
