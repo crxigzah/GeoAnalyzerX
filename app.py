@@ -4,7 +4,7 @@ GeoAnalyzerX Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
-import hashlib, os, secrets, uuid, base64, io, time, threading, re, math, queue, json as _json
+import hashlib, os, secrets, uuid, base64, io, time, threading, re, math, queue, json as _json, random, datetime
 import pg8000.native
 from urllib.parse import urlparse
 
@@ -257,6 +257,19 @@ def init_db():
             created_at TIMESTAMPTZ DEFAULT NOW())""")
         conn.run("CREATE INDEX IF NOT EXISTS idx_guess_results_user ON guess_results(user_id)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_guess_results_country ON guess_results(user_id, country)")
+        conn.run("""CREATE TABLE IF NOT EXISTS camera_quiz_images (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            image_url TEXT NOT NULL,
+            correct_gen TEXT NOT NULL,
+            uploaded_by TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("""CREATE TABLE IF NOT EXISTS photo_quiz_images (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            quiz_type TEXT NOT NULL,
+            image_url TEXT NOT NULL,
+            correct_country TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_photo_quiz_type ON photo_quiz_images(quiz_type)")
         conn.close()
         print("DB init OK")
     except Exception as e:
@@ -2098,6 +2111,313 @@ def admin_upload_guide_image():
             return jsonify({"error": f"Storage upload failed: {resp.status_code}"}), 500
         url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{r2_key}"
         return jsonify({"url": url})
+    except Exception as e:
+        return safe_error(e)
+
+VALID_CAMERA_GENS = ["Gen 1", "Gen 2", "Gen 3", "Gen 4", "Trekker / Other"]
+
+# Same coverage list used by region-map.html / the guide scaffold — used
+# here purely to generate plausible wrong-answer options for the
+# country-guessing training games.
+QUIZ_COUNTRY_POOL = [
+  "Albania","Andorra","Argentina","Australia","Austria","Bangladesh","Belgium",
+  "Bhutan","Bolivia","Botswana","Brazil","Bulgaria","Cambodia","Canada","Chile",
+  "Colombia","Costa Rica","Croatia","Cyprus","Czechia","Denmark",
+  "Dominican Republic","Ecuador","Estonia","Eswatini","Finland","France",
+  "Georgia","Germany","Ghana","Greece","Greenland","Guatemala","Hungary",
+  "Iceland","India","Indonesia","Ireland","Israel","Italy","Japan","Jordan",
+  "Kazakhstan","Kenya","Kyrgyzstan","Laos","Latvia","Lebanon","Lesotho",
+  "Liechtenstein","Lithuania","Luxembourg","Madagascar","Malaysia","Malta",
+  "Mexico","Monaco","Mongolia","Montenegro","Namibia","Nepal","Netherlands",
+  "New Zealand","Nigeria","North Macedonia","Norway","Oman","Pakistan",
+  "Palestine","Panama","Peru","Philippines","Poland","Portugal","Qatar",
+  "Romania","Russia","Rwanda","San Marino","Sao Tome and Principe","Senegal",
+  "Serbia","Singapore","Slovakia","Slovenia","South Africa","South Korea",
+  "Spain","Sri Lanka","Sweden","Switzerland","Taiwan","Thailand","Tunisia",
+  "Turkey","Uganda","Ukraine","United Arab Emirates","United Kingdom",
+  "United States of America","Uruguay","Vietnam"
+]
+VALID_PHOTO_QUIZ_TYPES = ["bollard", "sign_shape", "vegetation", "license_plate"]
+
+@app.route("/admin/camera_quiz/upload", methods=["POST","OPTIONS"])
+def admin_camera_quiz_upload():
+    """Uploads a labeled reference image for the Camera Generation training
+    game. Real, correctly-labeled example photos have to come from an
+    admin who can actually verify the generation — there's no way to
+    safely auto-source these."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    image_b64 = d.get("image", "")
+    correct_gen = (d.get("correct_gen") or "").strip()
+    if not image_b64:
+        return jsonify({"error": "No image provided"}), 400
+    if correct_gen not in VALID_CAMERA_GENS:
+        return jsonify({"error": f"correct_gen must be one of: {', '.join(VALID_CAMERA_GENS)}"}), 400
+    try:
+        if "," in image_b64:
+            header, image_b64 = image_b64.split(",", 1)
+            ext = "png" if "png" in header else "jpg"
+        else:
+            ext = "jpg"
+        img_bytes = base64.b64decode(image_b64)
+        r2_key = f"camera-quiz/{uuid.uuid4()}.{ext}"
+        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{r2_key}"
+        resp = http_requests.post(
+            upload_url,
+            headers={
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": f"image/{ext}",
+                "x-upsert": "true"
+            },
+            data=img_bytes,
+            timeout=30
+        )
+        if resp.status_code not in (200, 201):
+            return jsonify({"error": f"Storage upload failed: {resp.status_code}"}), 500
+        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{r2_key}"
+
+        conn = get_db()
+        conn.run("""INSERT INTO camera_quiz_images (image_url, correct_gen)
+            VALUES (:url, :gen)""", url=url, gen=correct_gen)
+        conn.close()
+        return jsonify({"success": True, "url": url})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/camera_quiz/list", methods=["GET","OPTIONS"])
+def admin_camera_quiz_list():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT id, image_url, correct_gen, created_at
+            FROM camera_quiz_images ORDER BY created_at DESC""")
+        conn.close()
+        images = [{"id": str(r[0]), "image_url": r[1], "correct_gen": r[2], "created_at": str(r[3])} for r in rows]
+        return jsonify({"images": images})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/camera_quiz/delete/<image_id>", methods=["DELETE","OPTIONS"])
+def admin_camera_quiz_delete(image_id):
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        conn.run("DELETE FROM camera_quiz_images WHERE id=:id", id=image_id)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/camera_quiz/random", methods=["GET","OPTIONS"])
+def camera_quiz_random():
+    """Public — no login required, this is a free training game. Returns
+    one random labeled image plus the fixed set of possible answers."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT id, image_url, correct_gen FROM camera_quiz_images
+            ORDER BY RANDOM() LIMIT 1""")
+        conn.close()
+        if not rows:
+            return jsonify({"error": "No quiz images available yet"}), 404
+        return jsonify({
+            "id": str(rows[0][0]),
+            "image_url": rows[0][1],
+            "correct_gen": rows[0][2],
+            "options": VALID_CAMERA_GENS
+        })
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/photo_quiz/upload", methods=["POST","OPTIONS"])
+def admin_photo_quiz_upload():
+    """Uploads a labeled photo for one of the country-guessing training
+    games (Bollard Bingo, Sign Shape Sprint, Vegetation Snap, License Plate
+    Guess) — all four share this same table/upload flow, distinguished
+    only by quiz_type, since the game mechanic is identical for each."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    image_b64 = d.get("image", "")
+    quiz_type = (d.get("quiz_type") or "").strip()
+    correct_country = (d.get("correct_country") or "").strip()
+    if not image_b64:
+        return jsonify({"error": "No image provided"}), 400
+    if quiz_type not in VALID_PHOTO_QUIZ_TYPES:
+        return jsonify({"error": f"quiz_type must be one of: {', '.join(VALID_PHOTO_QUIZ_TYPES)}"}), 400
+    if correct_country not in QUIZ_COUNTRY_POOL:
+        return jsonify({"error": "correct_country must be a recognised GeoGuessr-covered country"}), 400
+    try:
+        if "," in image_b64:
+            header, image_b64 = image_b64.split(",", 1)
+            ext = "png" if "png" in header else "jpg"
+        else:
+            ext = "jpg"
+        img_bytes = base64.b64decode(image_b64)
+        r2_key = f"photo-quiz/{quiz_type}/{uuid.uuid4()}.{ext}"
+        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{r2_key}"
+        resp = http_requests.post(
+            upload_url,
+            headers={
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": f"image/{ext}",
+                "x-upsert": "true"
+            },
+            data=img_bytes,
+            timeout=30
+        )
+        if resp.status_code not in (200, 201):
+            return jsonify({"error": f"Storage upload failed: {resp.status_code}"}), 500
+        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{r2_key}"
+
+        conn = get_db()
+        conn.run("""INSERT INTO photo_quiz_images (quiz_type, image_url, correct_country)
+            VALUES (:qt, :url, :country)""", qt=quiz_type, url=url, country=correct_country)
+        conn.close()
+        return jsonify({"success": True, "url": url})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/photo_quiz/list", methods=["GET","OPTIONS"])
+def admin_photo_quiz_list():
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    quiz_type = request.args.get("type", "")
+    try:
+        conn = get_db()
+        if quiz_type:
+            rows = conn.run("""SELECT id, quiz_type, image_url, correct_country, created_at
+                FROM photo_quiz_images WHERE quiz_type=:qt ORDER BY created_at DESC""", qt=quiz_type)
+        else:
+            rows = conn.run("""SELECT id, quiz_type, image_url, correct_country, created_at
+                FROM photo_quiz_images ORDER BY created_at DESC""")
+        conn.close()
+        images = [{"id": str(r[0]), "quiz_type": r[1], "image_url": r[2], "correct_country": r[3], "created_at": str(r[4])} for r in rows]
+        return jsonify({"images": images})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/photo_quiz/delete/<image_id>", methods=["DELETE","OPTIONS"])
+def admin_photo_quiz_delete(image_id):
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        conn.run("DELETE FROM photo_quiz_images WHERE id=:id", id=image_id)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/photo_quiz/random", methods=["GET","OPTIONS"])
+def photo_quiz_random():
+    """Public — no login required. Returns one random labeled photo of the
+    requested quiz_type, plus 5 shuffled multiple-choice options (the
+    correct country + 4 random decoys from the coverage pool)."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    quiz_type = request.args.get("type", "")
+    if quiz_type not in VALID_PHOTO_QUIZ_TYPES:
+        return jsonify({"error": f"type must be one of: {', '.join(VALID_PHOTO_QUIZ_TYPES)}"}), 400
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT id, image_url, correct_country FROM photo_quiz_images
+            WHERE quiz_type=:qt ORDER BY RANDOM() LIMIT 1""", qt=quiz_type)
+        conn.close()
+        if not rows:
+            return jsonify({"error": "No quiz images available yet for this game"}), 404
+        correct = rows[0][2]
+        decoy_pool = [c for c in QUIZ_COUNTRY_POOL if c != correct]
+        decoys = random.sample(decoy_pool, min(4, len(decoy_pool)))
+        options = decoys + [correct]
+        random.shuffle(options)
+        return jsonify({
+            "id": str(rows[0][0]),
+            "image_url": rows[0][1],
+            "correct_country": correct,
+            "options": options
+        })
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/meta_quiz/random", methods=["GET","OPTIONS"])
+def meta_quiz_random():
+    """Meta Speed Quiz — pulls a random real fact directly out of an
+    existing written guide's img-text/tip/warning blocks, and asks which
+    country it describes. No new content to maintain — it reuses guides
+    you've already written."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT country, content FROM country_metas
+            WHERE source='manual' AND content IS NOT NULL""")
+        conn.close()
+        candidates = []
+        for country, content in rows:
+            try:
+                blocks = _json.loads(content).get("blocks", [])
+            except Exception:
+                continue
+            for b in blocks:
+                if b.get("type") in ("img-text", "tip", "warning"):
+                    text = (b.get("data") or {}).get("text", "").strip()
+                    # Skip anything too short, or scaffold placeholder text
+                    # that was never actually filled in.
+                    if len(text) < 25 or "[" in text or "goes here" in text.lower():
+                        continue
+                    candidates.append({"country": country, "text": text})
+        if not candidates:
+            return jsonify({"error": "No guide facts available yet — write a few guides first"}), 404
+        pick = random.choice(candidates)
+        correct = pick["country"]
+        decoy_pool = [c for c in QUIZ_COUNTRY_POOL if c != correct]
+        decoys = random.sample(decoy_pool, min(4, len(decoy_pool)))
+        options = decoys + [correct]
+        random.shuffle(options)
+        return jsonify({ "clue_text": pick["text"], "correct_country": correct, "options": options })
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/daily_challenge", methods=["GET","OPTIONS"])
+def daily_challenge():
+    """One deterministic challenge per calendar day, the same for every
+    player — combines all quiz pools (camera gen, the 4 photo-quiz types,
+    and meta facts) so the daily pick can be any training format."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    try:
+        today = datetime.date.today().isoformat()
+        seed = int(hashlib.sha256(today.encode()).hexdigest(), 16)
+        rnd = random.Random(seed)
+
+        conn = get_db()
+        camera_rows = conn.run("SELECT id, image_url, correct_gen FROM camera_quiz_images")
+        photo_rows  = conn.run("SELECT id, quiz_type, image_url, correct_country FROM photo_quiz_images")
+        conn.close()
+
+        pool = []
+        for r in camera_rows:
+            pool.append({"kind": "camera_gen", "id": str(r[0]), "image_url": r[1], "answer": r[2], "options": VALID_CAMERA_GENS})
+        for r in photo_rows:
+            correct = r[3]
+            decoy_pool = [c for c in QUIZ_COUNTRY_POOL if c != correct]
+            decoys = rnd.sample(decoy_pool, min(4, len(decoy_pool)))
+            opts = decoys + [correct]
+            rnd.shuffle(opts)
+            pool.append({"kind": r[1], "id": str(r[0]), "image_url": r[2], "answer": correct, "options": opts})
+
+        if not pool:
+            return jsonify({"error": "No challenge content available yet"}), 404
+
+        pick = pool[seed % len(pool)]
+        return jsonify({ "date": today, **pick })
     except Exception as e:
         return safe_error(e)
 
