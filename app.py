@@ -359,8 +359,22 @@ def upload_to_storage(image_b64: str, country: str, state: str, region: str):
     """Upload image to Supabase Storage."""
     try:
         import requests
+        import unicodedata
         image_bytes = base64.b64decode(image_b64)
-        key = f"{country}/{state or 'unknown'}/{region or 'central'}/{uuid.uuid4()}.jpg"
+
+        def safe_segment(s, default):
+            # Strip diacritics (e.g. the macron in "Manawatū-Whanganui")
+            # before using a value as a raw URL path segment. Without this,
+            # region/state names with accented characters could silently
+            # fail to upload, or land under an inconsistently-encoded path
+            # that never shows up as a clean matching folder — which is
+            # exactly why Manawatū-Whanganui was missing while every other
+            # (plain-ASCII) NZ region worked fine.
+            s = s or default
+            s = unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
+            return s or default
+
+        key = f"{safe_segment(country,'unknown')}/{safe_segment(state,'unknown')}/{safe_segment(region,'central')}/{uuid.uuid4()}.jpg"
         url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{key}"
         headers = {
             "Authorization": f"Bearer {SUPABASE_KEY}",
