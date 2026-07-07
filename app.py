@@ -1,5 +1,5 @@
 """
-GeoAnalyzerX Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
+5kable Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
 """
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
@@ -45,7 +45,7 @@ DATABASE_URL       = os.environ.get("DATABASE_URL", "")
 import requests as http_requests
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-EMAIL_FROM     = os.environ.get("EMAIL_FROM", "GeoAnalyzerX <noreply@geoanalyzerx.net>")
+EMAIL_FROM     = os.environ.get("EMAIL_FROM", "5kable <noreply@geoanalyzerx.net>")
 ADMIN_KEY      = os.environ.get("ADMIN_KEY", "")
 
 def send_email(to, subject, html):
@@ -67,15 +67,15 @@ def send_email(to, subject, html):
 def send_verification_email(email, username, code):
     html = f"""
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#08080f;color:#e0e0f0;border-radius:16px;">
-      <h1 style="color:#00c9a7;font-size:20px;">Verify your GeoAnalyzerX account</h1>
+      <h1 style="color:#00c9a7;font-size:20px;">Verify your 5kable account</h1>
       <p style="color:#8888aa;font-size:14px;">Hi {username}, use the code below to verify your email and activate your account.</p>
       <div style="background:#1a1a2e;border:1px solid #2a2a3e;border-radius:12px;padding:20px;text-align:center;margin:20px 0;">
         <div style="font-size:32px;font-weight:800;letter-spacing:8px;color:#00c9a7;">{code}</div>
       </div>
-      <p style="color:#5a5a7a;font-size:12px;">This code expires in 15 minutes. If you didn't sign up for GeoAnalyzerX, you can ignore this email.</p>
+      <p style="color:#5a5a7a;font-size:12px;">This code expires in 15 minutes. If you didn't sign up for 5kable, you can ignore this email.</p>
     </div>
     """
-    return send_email(email, "Verify your GeoAnalyzerX account", html)
+    return send_email(email, "Verify your 5kable account", html)
 FRONTEND_URL       = os.environ.get("FRONTEND_URL", "https://geoanalyzerx.net")
 SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -247,6 +247,16 @@ def init_db():
             last_edited_by TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("""CREATE TABLE IF NOT EXISTS guess_results (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            user_id INT NOT NULL,
+            country TEXT NOT NULL,
+            correct_region TEXT,
+            guessed_region TEXT,
+            is_correct BOOLEAN NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_guess_results_user ON guess_results(user_id)")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_guess_results_country ON guess_results(user_id, country)")
         conn.close()
         print("DB init OK")
     except Exception as e:
@@ -845,7 +855,7 @@ def setup_2fa():
         return safe_error(e)
     secret = pyotp.random_base32()
     totp   = pyotp.TOTP(secret)
-    uri    = totp.provisioning_uri(name=email, issuer_name="GeoAnalyzerX")
+    uri    = totp.provisioning_uri(name=email, issuer_name="5kable")
     qr = qrcode.QRCode(box_size=6, border=2)
     qr.add_data(uri)
     qr.make(fit=True)
@@ -1326,6 +1336,130 @@ def ai_usage():
         })
     except Exception as e:
         return safe_error(e)
+
+@app.route("/guess/log", methods=["POST", "OPTIONS"])
+def log_guess_result():
+    """Logs whether a round's guess landed in the correct region — the raw
+    data behind the per-country region-guessing accuracy stats. Called by
+    the extension right after it determines correctness, alongside (not
+    instead of) deciding whether to show a training guide."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    country = (d.get("country") or "").strip()
+    if not country:
+        return jsonify({"error": "country required"}), 400
+    is_correct = bool(d.get("is_correct"))
+    correct_region = (d.get("correct_region") or None)
+    guessed_region = (d.get("guessed_region") or None)
+    try:
+        conn = get_db()
+        conn.run("""INSERT INTO guess_results (user_id, country, correct_region, guessed_region, is_correct)
+            VALUES (:uid, :country, :cr, :gr, :ic)""",
+            uid=user_id, country=country, cr=correct_region, gr=guessed_region, ic=is_correct)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/guess/stats", methods=["POST", "OPTIONS"])
+def guess_stats():
+    """Per-country region-guessing accuracy for the logged-in user — the
+    real, gameplay-derived measure of "how confident am I at this country"
+    rather than a manual self-rating."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT country,
+                COUNT(*) AS total,
+                SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) AS correct
+            FROM guess_results
+            WHERE user_id=:uid
+            GROUP BY country
+            ORDER BY country""", uid=user_id)
+        conn.close()
+        stats = [{
+            "country": r[0],
+            "total": r[1],
+            "correct": r[2],
+            "pct": round(100 * r[2] / r[1]) if r[1] else 0
+        } for r in rows]
+        return jsonify({"stats": stats})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/guess/insights", methods=["POST", "OPTIONS"])
+def guess_insights():
+    """Deeper gameplay insights beyond the basic per-country list: best
+    country, worst country, "coin flip" countries sitting near 50%
+    accuracy, and — using the fact that guess_results stores both the
+    correct region AND what was actually guessed — the single most common
+    region mixup within each country (e.g. "you keep guessing Victoria
+    when it's actually New South Wales")."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        conn = get_db()
+
+        country_rows = conn.run("""SELECT country,
+                COUNT(*) AS total,
+                SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) AS correct
+            FROM guess_results
+            WHERE user_id=:uid
+            GROUP BY country""", uid=user_id)
+        country_stats = [{
+            "country": r[0], "total": r[1], "correct": r[2],
+            "pct": round(100 * r[2] / r[1]) if r[1] else 0
+        } for r in country_rows]
+
+        # Only consider countries with a reasonable sample size — a single
+        # lucky/unlucky guess shouldn't crown a "best" or "worst" country.
+        MIN_ATTEMPTS = 3
+        qualifying = [c for c in country_stats if c["total"] >= MIN_ATTEMPTS]
+        best  = max(qualifying, key=lambda c: c["pct"]) if qualifying else None
+        worst = min(qualifying, key=lambda c: c["pct"]) if qualifying else None
+        fifty_fifty = sorted(
+            [c for c in qualifying if 40 <= c["pct"] <= 60],
+            key=lambda c: abs(c["pct"] - 50)
+        )[:5]
+
+        # Most common wrong-region guess per country. ORDER BY country then
+        # count DESC means the first row seen for each country is already
+        # its top mixup, so a simple "first one wins" pass in Python is
+        # enough — no need for a more complex window-function query.
+        mixup_rows = conn.run("""SELECT country, correct_region, guessed_region, COUNT(*) AS cnt
+            FROM guess_results
+            WHERE user_id=:uid AND is_correct=FALSE
+              AND correct_region IS NOT NULL AND guessed_region IS NOT NULL
+              AND correct_region <> guessed_region
+            GROUP BY country, correct_region, guessed_region
+            ORDER BY country, cnt DESC""", uid=user_id)
+        mixups_by_country = {}
+        for country, correct_region, guessed_region, cnt in mixup_rows:
+            if country not in mixups_by_country:
+                mixups_by_country[country] = {
+                    "country": country, "correct_region": correct_region,
+                    "guessed_region": guessed_region, "count": cnt
+                }
+        mixups = sorted(mixups_by_country.values(), key=lambda m: m["count"], reverse=True)
+
+        conn.close()
+        return jsonify({ "best": best, "worst": worst, "fifty_fifty": fifty_fifty, "mixups": mixups })
+    except Exception as e:
+        return safe_error(e)
+
 def ai_check_scene_quality(image_b64):
     """Uses Claude to check if an image is a genuine outdoor Street-View-style
     scene, to keep the community library free of junk (selfies, screenshots
