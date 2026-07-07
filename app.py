@@ -1,5 +1,5 @@
 """
-5kable Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
+GeoAnalyzerX Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
 """
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
@@ -45,7 +45,7 @@ DATABASE_URL       = os.environ.get("DATABASE_URL", "")
 import requests as http_requests
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-EMAIL_FROM     = os.environ.get("EMAIL_FROM", "5kable <noreply@geoanalyzerx.net>")
+EMAIL_FROM     = os.environ.get("EMAIL_FROM", "GeoAnalyzerX <noreply@geoanalyzerx.net>")
 ADMIN_KEY      = os.environ.get("ADMIN_KEY", "")
 
 def send_email(to, subject, html):
@@ -67,15 +67,15 @@ def send_email(to, subject, html):
 def send_verification_email(email, username, code):
     html = f"""
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#08080f;color:#e0e0f0;border-radius:16px;">
-      <h1 style="color:#00c9a7;font-size:20px;">Verify your 5kable account</h1>
+      <h1 style="color:#00c9a7;font-size:20px;">Verify your GeoAnalyzerX account</h1>
       <p style="color:#8888aa;font-size:14px;">Hi {username}, use the code below to verify your email and activate your account.</p>
       <div style="background:#1a1a2e;border:1px solid #2a2a3e;border-radius:12px;padding:20px;text-align:center;margin:20px 0;">
         <div style="font-size:32px;font-weight:800;letter-spacing:8px;color:#00c9a7;">{code}</div>
       </div>
-      <p style="color:#5a5a7a;font-size:12px;">This code expires in 15 minutes. If you didn't sign up for 5kable, you can ignore this email.</p>
+      <p style="color:#5a5a7a;font-size:12px;">This code expires in 15 minutes. If you didn't sign up for GeoAnalyzerX, you can ignore this email.</p>
     </div>
     """
-    return send_email(email, "Verify your 5kable account", html)
+    return send_email(email, "Verify your GeoAnalyzerX account", html)
 FRONTEND_URL       = os.environ.get("FRONTEND_URL", "https://geoanalyzerx.net")
 SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -855,7 +855,7 @@ def setup_2fa():
         return safe_error(e)
     secret = pyotp.random_base32()
     totp   = pyotp.TOTP(secret)
-    uri    = totp.provisioning_uri(name=email, issuer_name="5kable")
+    uri    = totp.provisioning_uri(name=email, issuer_name="GeoAnalyzerX")
     qr = qrcode.QRCode(box_size=6, border=2)
     qr.add_data(uri)
     qr.make(fit=True)
