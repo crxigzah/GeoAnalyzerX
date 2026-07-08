@@ -258,6 +258,16 @@ def init_db():
             created_at TIMESTAMPTZ DEFAULT NOW())""")
         conn.run("CREATE INDEX IF NOT EXISTS idx_guess_results_user ON guess_results(user_id)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_guess_results_country ON guess_results(user_id, country)")
+        conn.run("""CREATE TABLE IF NOT EXISTS form_submissions (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            user_id INT,
+            form_type TEXT NOT NULL,
+            name TEXT,
+            email TEXT,
+            message TEXT,
+            extra TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_form_submissions_type ON form_submissions(form_type)")
         conn.run("""CREATE TABLE IF NOT EXISTS camera_quiz_images (
             id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
             image_url TEXT NOT NULL,
@@ -1638,7 +1648,7 @@ def guess_full_stats():
     except Exception as e:
         return safe_error(e)
 
-BADGE_THRESHOLD = 20  # correct region guesses in a country to earn its flag badge
+BADGE_THRESHOLD = 1000  # correct region guesses in a country to earn its flag badge (diamond status)
 
 @app.route("/badges/list", methods=["POST", "OPTIONS"])
 def badges_list():
@@ -1706,6 +1716,67 @@ def badges_set():
         return jsonify({"success": True, "active_badge_country": country})
     except Exception as e:
         return safe_error(e)
+
+FORM_TYPES = {
+    "bug": "Bug Report",
+    "feature": "Feature Request",
+    "meta_correction": "Meta Correction / Submission",
+    "feedback": "General Feedback",
+}
+
+BANNED_WORDS_SERVER = ['fuck','shit','cunt','bitch','nigger','nigga','faggot','retard']
+def containsBannedWordServer(text):
+    if not text: return False
+    lower = text.lower()
+    return any(w in lower for w in BANNED_WORDS_SERVER)
+
+@app.route("/forms/submit", methods=["POST", "OPTIONS"])
+def forms_submit():
+    """Handles all Forms-section submissions (bug reports, feature
+    requests, meta corrections, general feedback). Attaches the logged-in
+    user if a valid token was sent, but works for guests too. Emails the
+    team via Resend when configured; always stores a row either way so
+    nothing is lost if email delivery fails or isn't set up."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    form_type = (d.get("form_type") or "").strip()
+    if form_type not in FORM_TYPES:
+        return jsonify({"error": "Invalid form type"}), 400
+    name = (d.get("name") or "").strip()[:100]
+    email = (d.get("email") or "").strip()[:200]
+    message = (d.get("message") or "").strip()[:5000]
+    extra = (d.get("extra") or "").strip()[:2000]
+    if not message:
+        return jsonify({"error": "Message is required"}), 400
+    if containsBannedWordServer(name) or containsBannedWordServer(message):
+        return jsonify({"error": "Submission contains disallowed language"}), 400
+
+    token = d.get("token", "")
+    user_id = None
+    if token:
+        user_id, _, _ = get_user_from_token(token)
+
+    try:
+        conn = get_db()
+        conn.run("""INSERT INTO form_submissions (user_id, form_type, name, email, message, extra)
+            VALUES (:uid, :ft, :n, :e, :m, :x)""",
+            uid=user_id, ft=form_type, n=name or None, e=email or None, m=message, x=extra or None)
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+
+    support_email = os.environ.get("SUPPORT_EMAIL", "support@geoanalyzerx.com")
+    label = FORM_TYPES[form_type]
+    html = f"""
+    <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;background:#08080f;color:#e0e0f0;border-radius:12px;">
+      <h2 style="color:#00c9a7;font-size:18px;">New {label}</h2>
+      <p><strong>From:</strong> {name or 'Anonymous'} {f'({email})' if email else ''}</p>
+      <p><strong>Message:</strong><br>{message.replace(chr(10), '<br>')}</p>
+      {f'<p><strong>Extra:</strong><br>{extra.replace(chr(10), "<br>")}</p>' if extra else ''}
+    </div>"""
+    send_email(support_email, f"[GeoAnalyzerX Forms] New {label}", html)
+
+    return jsonify({"success": True})
 
 def ai_check_scene_quality(image_b64):
     """Uses Claude to check if an image is a genuine outdoor Street-View-style
