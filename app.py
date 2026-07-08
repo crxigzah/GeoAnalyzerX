@@ -1473,6 +1473,170 @@ def guess_insights():
     except Exception as e:
         return safe_error(e)
 
+@app.route("/guess/full_stats", methods=["POST", "OPTIONS"])
+def guess_full_stats():
+    """The deep-dive stats page — every angle the raw guess_results data
+    can support, beyond the basic per-country breakdown: overall totals,
+    win/current streaks, session count, per-REGION (not just per-country)
+    accuracy, the complete confusion matrix (every wrong-region pair ever
+    made, not just the single top mixup), a day-by-day accuracy trend, a
+    day-of-week pattern, and a raw recent-activity feed. Powers the
+    standalone Stats page rather than the account Dashboard."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        conn = get_db()
+
+        # ── Overview ──────────────────────────────────────────────
+        overview_row = conn.run("""SELECT COUNT(*) AS total,
+                SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) AS correct,
+                COUNT(DISTINCT country) AS countries_attempted,
+                MIN(created_at) AS first_played,
+                MAX(created_at) AS last_played
+            FROM guess_results WHERE user_id=:uid""", uid=user_id)
+        total, correct, countries_attempted, first_played, last_played = overview_row[0]
+        total = total or 0
+        correct = correct or 0
+
+        # ── Per-country stats (reused for "mastered" count) ────────
+        country_rows = conn.run("""SELECT country,
+                COUNT(*) AS total,
+                SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) AS correct
+            FROM guess_results WHERE user_id=:uid GROUP BY country""", uid=user_id)
+        country_stats = [{
+            "country": r[0], "total": r[1], "correct": r[2],
+            "pct": round(100 * r[2] / r[1]) if r[1] else 0
+        } for r in country_rows]
+        MIN_ATTEMPTS = 3
+        qualifying_countries = [c for c in country_stats if c["total"] >= MIN_ATTEMPTS]
+        countries_mastered = len([c for c in qualifying_countries if c["pct"] >= 80])
+
+        # ── Per-region breakdown within each country ────────────────
+        region_rows = conn.run("""SELECT country, correct_region,
+                COUNT(*) AS total,
+                SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) AS correct
+            FROM guess_results
+            WHERE user_id=:uid AND correct_region IS NOT NULL
+            GROUP BY country, correct_region
+            ORDER BY country, correct_region""", uid=user_id)
+        region_breakdown = {}
+        for country, region, r_total, r_correct in region_rows:
+            region_breakdown.setdefault(country, []).append({
+                "region": region, "total": r_total, "correct": r_correct,
+                "pct": round(100 * r_correct / r_total) if r_total else 0
+            })
+
+        # Best/worst individual REGIONS across all countries combined
+        # (min sample size so one lucky/unlucky round can't crown a winner).
+        all_regions_flat = [
+            {"country": country, **reg}
+            for country, regs in region_breakdown.items() for reg in regs
+        ]
+        qualifying_regions = [r for r in all_regions_flat if r["total"] >= 3]
+        best_region  = max(qualifying_regions, key=lambda r: r["pct"]) if qualifying_regions else None
+        worst_region = min(qualifying_regions, key=lambda r: r["pct"]) if qualifying_regions else None
+
+        # ── Full confusion matrix — every wrong-region pair ever made,
+        # not just the single top mixup per country. ────────────────
+        mixup_rows = conn.run("""SELECT country, correct_region, guessed_region, COUNT(*) AS cnt
+            FROM guess_results
+            WHERE user_id=:uid AND is_correct=FALSE
+              AND correct_region IS NOT NULL AND guessed_region IS NOT NULL
+              AND correct_region <> guessed_region
+            GROUP BY country, correct_region, guessed_region
+            ORDER BY cnt DESC""", uid=user_id)
+        confusion_matrix = [{
+            "country": r[0], "correct_region": r[1], "guessed_region": r[2], "count": r[3]
+        } for r in mixup_rows]
+
+        # ── Daily accuracy trend, last 30 days ───────────────────────
+        trend_rows = conn.run("""SELECT DATE(created_at) AS day,
+                COUNT(*) AS total,
+                SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) AS correct
+            FROM guess_results
+            WHERE user_id=:uid AND created_at > NOW() - INTERVAL '30 days'
+            GROUP BY DATE(created_at)
+            ORDER BY day""", uid=user_id)
+        daily_trend = [{
+            "date": r[0].isoformat(), "total": r[1], "correct": r[2],
+            "pct": round(100 * r[2] / r[1]) if r[1] else 0
+        } for r in trend_rows]
+
+        # ── Day-of-week pattern (do you guess worse on weekends?) ────
+        dow_rows = conn.run("""SELECT EXTRACT(DOW FROM created_at)::int AS dow,
+                COUNT(*) AS total,
+                SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) AS correct
+            FROM guess_results WHERE user_id=:uid
+            GROUP BY dow ORDER BY dow""", uid=user_id)
+        DOW_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
+        day_of_week = [{
+            "day": DOW_NAMES[r[0]], "total": r[1], "correct": r[2],
+            "pct": round(100 * r[2] / r[1]) if r[1] else 0
+        } for r in dow_rows]
+
+        # ── Streaks + session count — needs the full ordered history,
+        # so fetch once and reuse for both. A "session" is a run of
+        # rounds with no 30+ minute gap between them. ────────────────
+        all_rows = conn.run("""SELECT is_correct, created_at FROM guess_results
+            WHERE user_id=:uid ORDER BY created_at ASC""", uid=user_id)
+        best_streak = 0
+        running_streak = 0
+        for is_correct, _ in all_rows:
+            if is_correct:
+                running_streak += 1
+                best_streak = max(best_streak, running_streak)
+            else:
+                running_streak = 0
+        current_streak = 0
+        for is_correct, _ in reversed(all_rows):
+            if is_correct:
+                current_streak += 1
+            else:
+                break
+        sessions = 0
+        prev_time = None
+        for _, created_at in all_rows:
+            if prev_time is None or (created_at - prev_time) > datetime.timedelta(minutes=30):
+                sessions += 1
+            prev_time = created_at
+
+        # ── Recent activity feed — last 20 rounds, most recent first ─
+        recent_rows = conn.run("""SELECT country, correct_region, guessed_region, is_correct, created_at
+            FROM guess_results WHERE user_id=:uid
+            ORDER BY created_at DESC LIMIT 20""", uid=user_id)
+        recent_activity = [{
+            "country": r[0], "correct_region": r[1], "guessed_region": r[2],
+            "is_correct": r[3], "created_at": r[4].isoformat()
+        } for r in recent_rows]
+
+        conn.close()
+        return jsonify({
+            "overview": {
+                "total_games": total,
+                "overall_pct": round(100 * correct / total) if total else 0,
+                "countries_attempted": countries_attempted or 0,
+                "countries_mastered": countries_mastered,
+                "first_played": first_played.isoformat() if first_played else None,
+                "last_played": last_played.isoformat() if last_played else None,
+                "best_streak": best_streak,
+                "current_streak": current_streak,
+                "sessions": sessions,
+            },
+            "region_breakdown": region_breakdown,
+            "best_region": best_region,
+            "worst_region": worst_region,
+            "confusion_matrix": confusion_matrix,
+            "daily_trend": daily_trend,
+            "day_of_week": day_of_week,
+            "recent_activity": recent_activity,
+        })
+    except Exception as e:
+        return safe_error(e)
+
 def ai_check_scene_quality(image_b64):
     """Uses Claude to check if an image is a genuine outdoor Street-View-style
     scene, to keep the community library free of junk (selfies, screenshots
