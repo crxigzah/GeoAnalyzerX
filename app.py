@@ -181,6 +181,7 @@ def init_db():
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE")
+            conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS active_badge_country TEXT")
         except: pass
         try:
             conn.run("ALTER TABLE users ADD CONSTRAINT users_phone_number_key UNIQUE (phone_number)")
@@ -734,7 +735,7 @@ def login():
     try:
         conn = get_db()
         rows = conn.run("""SELECT id,username,email,tier,banned_until,ban_reason,disabled,email_verified,
-                            password,totp_enabled,totp_secret,phone_verified,phone_number FROM users WHERE email=:e""", e=email)
+                            password,totp_enabled,totp_secret,phone_verified,phone_number,active_badge_country FROM users WHERE email=:e""", e=email)
         if not rows or not verify_password(rows[0][8], password):
             conn.close()
             log_event("login_failed", detail=f"email={email}", ip=client_ip())
@@ -769,7 +770,7 @@ def login():
                 conn.close()
                 return jsonify({"error": "Invalid 2FA code", "code": "totp_invalid"}), 401
         user  = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],
-                  "phone_number":rows[0][12],"phone_verified":bool(rows[0][11])}
+                  "phone_number":rows[0][12],"phone_verified":bool(rows[0][11]),"active_badge_country":rows[0][13]}
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user["id"])
         conn.run("UPDATE users SET last_login=NOW() WHERE id=:uid", uid=user["id"])
@@ -806,7 +807,7 @@ def verify():
     if not token: return jsonify({"valid":False}),401
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,u.banned_until,u.ban_reason,u.email_verified,u.phone_verified,u.phone_number FROM users u
+        rows = conn.run("""SELECT u.id,u.username,u.email,u.tier,u.created_at,u.banned_until,u.ban_reason,u.email_verified,u.phone_verified,u.phone_number,u.active_badge_country FROM users u
             JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t AND s.expires_at>NOW()""", t=token)
         conn.close()
@@ -818,7 +819,7 @@ def verify():
                 "banned_until": str(banned_until),
                 "ban_reason": rows[0][6] or "Violation of terms of service"
             }), 403
-        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4]),"email_verified":bool(rows[0][7]),"phone_verified":bool(rows[0][8]),"phone_number":rows[0][9]}
+        user = {"id":rows[0][0],"username":rows[0][1],"email":rows[0][2],"tier":rows[0][3],"created_at":str(rows[0][4]),"email_verified":bool(rows[0][7]),"phone_verified":bool(rows[0][8]),"phone_number":rows[0][9],"active_badge_country":rows[0][10]}
         return jsonify({"valid":True,"user":user})
     except Exception as e:
         print("Server error:", repr(e))
@@ -1634,6 +1635,75 @@ def guess_full_stats():
             "day_of_week": day_of_week,
             "recent_activity": recent_activity,
         })
+    except Exception as e:
+        return safe_error(e)
+
+BADGE_THRESHOLD = 20  # correct region guesses in a country to earn its flag badge
+
+@app.route("/badges/list", methods=["POST", "OPTIONS"])
+def badges_list():
+    """Countries where the user has logged BADGE_THRESHOLD+ correct region
+    guesses — each one unlocks that country's flag as a selectable
+    profile badge. Also returns which one (if any) is currently active."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT country, SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) AS correct
+            FROM guess_results WHERE user_id=:uid
+            GROUP BY country
+            HAVING SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) >= :threshold
+            ORDER BY correct DESC""", uid=user_id, threshold=BADGE_THRESHOLD)
+        earned = [{"country": r[0], "correct": r[1]} for r in rows]
+
+        # Countries not yet earned but with some progress — powers a
+        # "closest to your next badge" progress view rather than a flat
+        # earned/not-earned list.
+        progress_rows = conn.run("""SELECT country, SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) AS correct
+            FROM guess_results WHERE user_id=:uid
+            GROUP BY country
+            HAVING SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) > 0
+               AND SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) < :threshold
+            ORDER BY correct DESC LIMIT 8""", uid=user_id, threshold=BADGE_THRESHOLD)
+        in_progress = [{"country": r[0], "correct": r[1]} for r in progress_rows]
+
+        active_row = conn.run("SELECT active_badge_country FROM users WHERE id=:uid", uid=user_id)
+        active = active_row[0][0] if active_row and active_row[0] else None
+        conn.close()
+        return jsonify({"earned": earned, "in_progress": in_progress, "active": active, "threshold": BADGE_THRESHOLD})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/badges/set", methods=["POST", "OPTIONS"])
+def badges_set():
+    """Sets (or clears, if country is omitted) the user's displayed
+    profile badge. Always re-checks the threshold server-side rather than
+    trusting the client, so a badge can't be set without actually having
+    earned it — this stays an honest reflection of real gameplay."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    country = (d.get("country") or "").strip() or None
+    try:
+        conn = get_db()
+        if country:
+            check = conn.run("""SELECT SUM(CASE WHEN is_correct THEN 1 ELSE 0 END)
+                FROM guess_results WHERE user_id=:uid AND country=:country""",
+                uid=user_id, country=country)
+            correct_count = (check[0][0] or 0) if check else 0
+            if correct_count < BADGE_THRESHOLD:
+                conn.close()
+                return jsonify({"error": f"Badge not yet earned — needs {BADGE_THRESHOLD} correct region guesses in {country}"}), 400
+        conn.run("UPDATE users SET active_badge_country=:c WHERE id=:uid", c=country, uid=user_id)
+        conn.close()
+        return jsonify({"success": True, "active_badge_country": country})
     except Exception as e:
         return safe_error(e)
 
