@@ -2312,9 +2312,12 @@ def admin_scenes_list():
         conn = get_db()
         total_row = conn.run(f"SELECT COUNT(*) FROM scenes WHERE {where_sql}", **params)
         total = total_row[0][0] if total_row else 0
-        rows = conn.run(f"""SELECT id, country, state, region, r2_key, quality_score,
-                quality_checked_at, quality_reason, times_used, uploaded_at
-            FROM scenes WHERE {where_sql}
+        rows = conn.run(f"""SELECT s.id, s.country, s.state, s.region, s.r2_key, s.quality_score,
+                s.quality_checked_at, s.quality_reason, s.times_used, s.uploaded_at,
+                s.contributor_user_id, u.username
+            FROM scenes s
+            LEFT JOIN users u ON u.id::TEXT = s.contributor_user_id
+            WHERE {where_sql}
             ORDER BY {order} LIMIT :limit OFFSET :offset""",
             limit=limit, offset=offset, **params)
         conn.close()
@@ -2323,6 +2326,7 @@ def admin_scenes_list():
             "r2_key": r[4], "image_url": scene_public_url(r[4]),
             "quality_score": r[5], "quality_checked_at": str(r[6]) if r[6] else None,
             "quality_reason": r[7], "times_used": r[8], "uploaded_at": str(r[9]),
+            "contributor_user_id": r[10], "contributor_username": r[11] or ("Unknown (deleted account)" if r[10] else "Anonymous"),
         } for r in rows]
         return jsonify({"scenes": scenes, "total": total, "limit": limit, "offset": offset})
     except Exception as e:
@@ -2395,6 +2399,44 @@ def admin_scenes_delete(scene_id):
         except Exception as e:
             print("Storage delete error (row already removed):", e)
         return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/scenes/delete_bulk", methods=["POST","OPTIONS"])
+def admin_scenes_delete_bulk():
+    """Deletes several scenes in one call — both their Postgres rows and
+    their actual files in Supabase Storage, using Storage's native
+    multi-path delete endpoint (one request for all files, not one per
+    file). Powers the Scene Library's multi-select delete."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    scene_ids = d.get("scene_ids") or []
+    if not scene_ids:
+        return jsonify({"error": "No scene_ids provided"}), 400
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT id, r2_key FROM scenes WHERE id = ANY(:ids)", ids=scene_ids)
+        found_ids = [str(r[0]) for r in rows]
+        r2_keys = [r[1] for r in rows]
+        if found_ids:
+            conn.run("DELETE FROM scenes WHERE id = ANY(:ids)", ids=found_ids)
+        conn.close()
+
+        if r2_keys:
+            try:
+                import requests
+                del_url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}"
+                requests.delete(
+                    del_url,
+                    headers={"Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                    json={"prefixes": r2_keys},
+                    timeout=30
+                )
+            except Exception as e:
+                print("Bulk storage delete error (rows already removed):", e)
+        return jsonify({"success": True, "deleted": len(found_ids)})
     except Exception as e:
         return safe_error(e)
 
