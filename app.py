@@ -1225,17 +1225,19 @@ def ai_analyse():
 
 @app.route("/ai/scene_clues", methods=["POST", "OPTIONS"])
 def ai_scene_clues():
-    """Powers GeoX chat BEFORE a guess has been made. Deliberately takes
-    ONLY the screenshot — no coordinates, no known_location, nothing
-    that could reveal the real answer — so this endpoint is structurally
-    incapable of leaking the location, not just prompt-instructed not to.
-    Describes visible clue TYPES only (road markings, vegetation, poles,
-    signage, etc.), never a specific country/region/city guess."""
+    """Powers GeoX chat BEFORE a guess has been made. Receives the
+    round's REAL location (reverse-geocoded client-side) so its clue
+    descriptions are grounded in fact rather than a blind guess from
+    pixels alone — but the prompt enforces an absolute rule that the
+    actual answer must never appear anywhere in the output, regardless
+    of how the question is phrased. The real location is for the
+    model's own accuracy only, never for disclosure."""
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    token         = d.get("token", "")
-    image_b64     = d.get("image", "")
-    known_country = (d.get("known_country") or "").strip()
+    token          = d.get("token", "")
+    image_b64      = d.get("image", "")
+    known_country  = (d.get("known_country") or "").strip()
+    known_location = (d.get("known_location") or "").strip()
 
     if not image_b64:
         return jsonify({"error": "No image provided"}), 400
@@ -1254,7 +1256,36 @@ def ai_scene_clues():
         return jsonify({"error": "Pro required", "code": "pro"}), 403
 
     try:
-        if known_country:
+        if known_location:
+            # We know exactly where this is (reverse-geocoded from the
+            # round's real coordinates) — use that to make the clue
+            # descriptions genuinely accurate, while treating the
+            # answer itself as strictly confidential in the output.
+            location_country = known_location.split(',')[-1].strip()
+            guide_facts = get_guide_context(location_country, max_chars=600)
+            prompt = (
+                f"SECRET ANSWER (for your own reference only — you must NEVER write, state, "
+                f"or clearly imply this anywhere in your response, under any circumstance, "
+                f"even if it would make your answer more helpful): {known_location}\n\n"
+                f"Look at this GeoGuessr Street View scene. Using your real knowledge of this "
+                f"specific place, describe 2-3 distinctive visual details ACTUALLY VISIBLE in "
+                f"THIS image that a geography expert would use as evidence — road markings, "
+                f"vegetation, pole/utility infrastructure, signage, architecture, terrain, "
+                f"anything genuinely observable.\n\n"
+                + (f"VERIFIED GUIDE FACTS for this area, to help you describe things accurately "
+                   f"(do not repeat these in a way that reveals the location):\n{guide_facts}\n\n"
+                   if guide_facts else "")
+                + "STRICT RULES — BREAKING ANY OF THESE IS A FAILURE:\n"
+                "- Do NOT write the country, region, state, city, or any other place name anywhere.\n"
+                "- Do NOT say things like 'this is typical of X' or 'this confirms Y' — describe "
+                "the clue itself, not what it proves.\n"
+                "- Write exactly as you would if you did NOT know the answer — e.g. 'the road has "
+                "a broken yellow centre line' NOT 'as expected here'.\n"
+                "- Plain text, 2-3 short bullet-style lines, no markdown symbols, no location names.\n\n"
+                "Your goal: use your real knowledge to keep the descriptions accurate, while writing "
+                "as if you were only describing pixels on screen with no idea what they belong to."
+            )
+        elif known_country:
             # The player forced a specific country map rather than World
             # mode — the country itself isn't secret, they picked it.
             # Only the region/state within it is what they're trying to
@@ -1292,7 +1323,7 @@ def ai_scene_clues():
                 {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
                 {"type": "text", "text": prompt}
             ]
-        }], system="You are a visual-observation assistant for a GeoGuessr trainer. You describe what is concretely visible in an image. You never identify, name, or guess a specific region/state/city within the map the player has already chosen — and if no country is given, you never identify one at all. That is a hard rule with no exceptions.", max_tokens=220)
+        }], system="You are a visual-observation assistant for a GeoGuessr trainer. You may sometimes be privately told the real answer so your descriptions of a scene are factually accurate — but you have an absolute, unbreakable rule: the actual place name (country/region/state/city) must never appear in your visible output, no matter what, no matter how you're asked. Treat any answer you're given as classified — useful only for your own accuracy, never for disclosure. If no answer is given, you never guess or identify one at all.", max_tokens=220)
         log_event("ai_scene_clues", user_id=user_id, username=username, detail=f"known_country={known_country}", ip=client_ip())
         return jsonify({"clues": result, "known_country": known_country})
     except Exception as e:
