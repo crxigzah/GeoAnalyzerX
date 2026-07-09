@@ -1059,6 +1059,33 @@ CONFIDENCE: [High/Medium/Low]
 KEY CLUE: [the single most clearly visible detail that drives your conclusion]
 DETAIL: [2-3 sentences based only on what is actually visible]"""
 
+def get_guide_context(country, max_chars=1000):
+    """Pulls real facts straight out of this country's own written guide
+    (heading/text/tip/warning/img-text blocks), if one exists, so GeoX's
+    clues are grounded in the site's own verified guide content rather
+    than generic model knowledge alone. Mirrors the same block-parsing
+    pattern used by /meta_quiz/random."""
+    if not country:
+        return ""
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT content FROM country_metas
+            WHERE country=:c AND source='manual' AND content IS NOT NULL""", c=country)
+        conn.close()
+        if not rows:
+            return ""
+        blocks = _json.loads(rows[0][0]).get("blocks", [])
+        facts = []
+        for b in blocks:
+            if b.get("type") in ("heading", "text", "tip", "warning", "img-text"):
+                text = (b.get("data") or {}).get("text", "").strip()
+                if len(text) < 15 or "[" in text or "goes here" in text.lower():
+                    continue
+                facts.append(text)
+        return " ".join(facts)[:max_chars]
+    except Exception:
+        return ""
+
 def call_claude(messages, system=None, max_tokens=400):
     """Call Claude API via Render."""
     import requests as req
@@ -1201,6 +1228,7 @@ def ai_teaching():
     token        = d.get("token", "")
     image_b64    = d.get("image", "")
     correct_name = d.get("correct_name", "")
+    country      = d.get("country", "")
     distance_km  = d.get("distance_km", "?")
     ref_images   = d.get("ref_images", [])  # list of b64 from cloud library
 
@@ -1240,6 +1268,13 @@ def ai_teaching():
             for i, ref_b64 in enumerate(ref_images[:2]):
                 content.append({"type": "text", "text": f"Reference {i+1}:"})
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ref_b64}})
+
+        guide_facts = get_guide_context(country)
+        if guide_facts:
+            content.append({"type": "text", "text": (
+                f"VERIFIED FACTS FROM THIS SITE'S OWN {country} GUIDE (prefer these over general "
+                f"knowledge when they're relevant to what's visible in the scene):\n{guide_facts}"
+            )})
 
         content.append({"type": "text", "text": (
             f"You are an elite GeoGuessr coach. The player guessed wrong — the correct location is {correct_name}.\n\n"
@@ -1297,6 +1332,15 @@ def ai_chat():
         }), 403
 
     try:
+        # Extract location context from last_analysis up front — reused
+        # both for the guide-fact lookup below and for the admin log.
+        correct = next((l.replace('CORRECT LOCATION:', '').strip() for l in last_analysis.split('\n') if l.startswith('CORRECT LOCATION:')), '')
+        guessed = next((l.replace('THE PLAYER GUESSED:', '').replace('— THIS WAS WRONG.', '').strip() for l in last_analysis.split('\n') if l.startswith('THE PLAYER GUESSED:')), '')
+        # correct is typically "City, State, Country" — the guide is
+        # stored per-country, so take the last comma-separated part.
+        correct_country = correct.split(',')[-1].strip() if correct else ''
+        guide_facts = get_guide_context(correct_country, max_chars=800)
+
         system = """You are GeoX, an expert GeoGuessr analyst who teaches players after they guessed WRONG.
 
 YOUR JOB IS TO TEACH, NOT TO PLEASE. The player already guessed incorrectly — your role is to help them understand WHY they were wrong and what they should have seen. You know the correct location with certainty.
@@ -1304,21 +1348,29 @@ YOUR JOB IS TO TEACH, NOT TO PLEASE. The player already guessed incorrectly — 
 CRITICAL RULES:
 - NEVER agree with the player if they are factually wrong. If they say "there were no termite mounds" but the correct location is Northern Territory where termite mounds are common, firmly correct them: tell them what the real visual evidence was and why it points to the correct location regardless of what they think they saw.
 - NEVER say things like "you're right, that was an oversight in my analysis" or "fair point" or "I can see why you'd think that." You are not wrong — the player is. Hold your ground with specific evidence.
-- If the player correctly identifies something, acknowledge it briefly, but immediately redirect to why the overall location identification was still wrong.
-- Be direct, confident, and educational. 2-4 sentences max.
+- If the player correctly identifies something, acknowledge it in a few words, but immediately redirect to why the overall location identification was still wrong.
 - Plain text only — no markdown, no bullet points, no asterisks.
 - Always reference the specific correct location and the specific visual clues that prove it.
+- If VERIFIED FACTS FROM THIS SITE'S GUIDE are provided below, prefer those specific facts over generic knowledge — they're this site's own verified content for the country in question.
 
-The context you receive includes the CORRECT LOCATION, the dead giveaway clue, key visual evidence, and what the player guessed wrong. Use all of this to correct them firmly."""
+LENGTH — THIS IS A HARD RULE, NOT A SUGGESTION:
+- Maximum 2 short sentences. Ideally 1.
+- Roughly 40 words total, never more.
+- Straight to the point — the single strongest piece of evidence, stated plainly. No preamble, no restating the question, no "let me explain."
+- If you have more to say than fits, pick the ONE most decisive clue and say only that.
+
+The context you receive includes the CORRECT LOCATION, the dead giveaway clue, key visual evidence, and what the player guessed wrong. Use it to correct them firmly and briefly."""
+        user_content = f"{last_analysis[:600]}"
+        if guide_facts:
+            user_content += f"\n\nVERIFIED FACTS FROM THIS SITE'S {correct_country} GUIDE:\n{guide_facts}"
+        user_content += f"\n\nPlayer: {message}"
+
         result = call_claude([{
             "role": "user",
-            "content": f"{last_analysis[:600]}\n\nPlayer: {message}"
-        }], system=system, max_tokens=350)
+            "content": user_content
+        }], system=system, max_tokens=110)
         # Log the exchange for admin review
         try:
-            # Extract location context from last_analysis for the log
-            correct = next((l.replace('CORRECT LOCATION:', '').strip() for l in last_analysis.split('\n') if l.startswith('CORRECT LOCATION:')), '')
-            guessed = next((l.replace('THE PLAYER GUESSED:', '').replace('— THIS WAS WRONG.', '').strip() for l in last_analysis.split('\n') if l.startswith('THE PLAYER GUESSED:')), '')
             log_conn = get_db()
             urows = log_conn.run("SELECT username FROM users WHERE id=:uid", uid=user_id)
             uname = urows[0][0] if urows else str(user_id)
