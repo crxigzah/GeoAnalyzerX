@@ -1975,7 +1975,15 @@ def ai_check_scene_quality(image_b64):
                     "role": "user",
                     "content": [
                         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
-                        {"type": "text", "text": "Is this a Google Street View scene of an outdoor real-world location? Reply only YES or NO."}
+                        {"type": "text", "text": (
+                            "Is this a CLEAN Google Street View scene of an outdoor real-world "
+                            "location, with NO overlaid UI visible anywhere in the frame? Reply "
+                            "NO if you see any of: a chat panel, sidebar, HUD, button, text box, "
+                            "compass overlay, score/round counter, browser extension panel, "
+                            "userscript panel, watermark, or any other interface element drawn "
+                            "on top of the photo — even a small one in a corner. Reply YES only "
+                            "if it's a genuinely clean, unobstructed scene. Reply only YES or NO."
+                        )}
                     ]
                 }]
             },
@@ -2166,6 +2174,7 @@ def get_refs():
             candidates = conn.run(f"""
                 SELECT r2_key, region, quality_score, lat, lng FROM scenes
                 WHERE {scope_clause} AND lat IS NOT NULL AND lng IS NOT NULL
+                  AND (quality_checked_at IS NULL OR quality_score = 1)
                 ORDER BY uploaded_at DESC LIMIT 200""",
                 **{("state" if state else "country"): scope_val})
 
@@ -2196,6 +2205,7 @@ def get_refs():
                 rows = conn.run("""
                     SELECT r2_key, region, quality_score FROM scenes
                     WHERE state ILIKE :state
+                      AND (quality_checked_at IS NULL OR quality_score = 1)
                     ORDER BY (region = :region) DESC, quality_score DESC, uploaded_at DESC
                     LIMIT :limit""",
                     state=state, region=region, limit=limit)
@@ -2203,6 +2213,7 @@ def get_refs():
                 rows = conn.run("""
                     SELECT r2_key, region, quality_score FROM scenes
                     WHERE state ILIKE :state
+                      AND (quality_checked_at IS NULL OR quality_score = 1)
                     ORDER BY quality_score DESC, uploaded_at DESC
                     LIMIT :limit""",
                     state=state, limit=limit)
@@ -2210,6 +2221,7 @@ def get_refs():
                 rows = conn.run("""
                     SELECT r2_key, region, quality_score FROM scenes
                     WHERE country ILIKE :country
+                      AND (quality_checked_at IS NULL OR quality_score = 1)
                     ORDER BY quality_score DESC, uploaded_at DESC
                     LIMIT :limit""",
                     country=country, limit=limit)
