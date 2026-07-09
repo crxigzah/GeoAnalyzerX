@@ -1518,7 +1518,7 @@ The context below is a clue-only scene description with no location attached —
             system = """You are GeoX, a GeoGuessr coach. There's no scene or location data available for this question — either the player isn't currently in a round, or the automatic scene analysis didn't succeed.
 
 Tell them in ONE short sentence that you couldn't get a read on the current scene — suggest joining an active round and asking again — unless their message is a general GeoGuessr question you can just answer directly and briefly. Plain text only, no markdown."""
-        user_content = f"{last_analysis[:600]}"
+        user_content = f"{last_analysis[:900]}"
         if guide_facts:
             user_content += f"\n\nVERIFIED FACTS FROM THIS SITE'S {correct_country} GUIDE:\n{guide_facts}"
         user_content += f"\n\nPlayer: {message}"
