@@ -1231,8 +1231,9 @@ def ai_scene_clues():
     signage, etc.), never a specific country/region/city guess."""
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
-    token     = d.get("token", "")
-    image_b64 = d.get("image", "")
+    token         = d.get("token", "")
+    image_b64     = d.get("image", "")
+    known_country = (d.get("known_country") or "").strip()
 
     if not image_b64:
         return jsonify({"error": "No image provided"}), 400
@@ -1251,28 +1252,47 @@ def ai_scene_clues():
         return jsonify({"error": "Pro required", "code": "pro"}), 403
 
     try:
-        prompt = (
-            "Look at this GeoGuessr Street View scene. List 2-3 distinctive, concrete VISUAL "
-            "details you can actually see — road markings, vegetation type, pole/utility "
-            "infrastructure, signage style or language, architecture, terrain, driving side "
-            "if visible, license plates, anything genuinely observable.\n\n"
-            "STRICT RULES:\n"
-            "- Do NOT name or imply any specific country, region, state, city, or continent.\n"
-            "- Do NOT say what the location 'is likely to be' or 'suggests'.\n"
-            "- Describe ONLY what is visibly present, in neutral, factual terms — e.g. "
-            "'the road has a broken yellow centre line and white edge lines' NOT 'this is "
-            "typical of X country'.\n"
-            "- Plain text, 2-3 short bullet-style lines, no markdown symbols, no location names anywhere."
-        )
+        if known_country:
+            # The player forced a specific country map rather than World
+            # mode — the country itself isn't secret, they picked it.
+            # Only the region/state within it is what they're trying to
+            # work out, so we can discuss country-level detail freely.
+            prompt = (
+                f"Look at this GeoGuessr Street View scene. The player has already selected "
+                f"{known_country} as the map, so {known_country} itself is NOT a secret — you "
+                f"may reference {known_country}-specific knowledge freely (typical pole types, "
+                f"road markings, vegetation, signage etc for {known_country}).\n\n"
+                f"List 2-3 distinctive visual details you can see in THIS scene, and where useful "
+                f"relate them to what's typical across different parts of {known_country}.\n\n"
+                f"STRICT RULE: Do NOT name or clearly imply which specific region, state, or city "
+                f"within {known_country} this is. You may discuss what a clue is consistent with in "
+                f"general terms (e.g. 'that pole style is more common in the South Island') without "
+                f"narrowing to one specific place.\n\n"
+                f"Plain text, 2-3 short bullet-style lines, no markdown symbols."
+            )
+        else:
+            prompt = (
+                "Look at this GeoGuessr Street View scene. List 2-3 distinctive, concrete VISUAL "
+                "details you can actually see — road markings, vegetation type, pole/utility "
+                "infrastructure, signage style or language, architecture, terrain, driving side "
+                "if visible, license plates, anything genuinely observable.\n\n"
+                "STRICT RULES:\n"
+                "- Do NOT name or imply any specific country, region, state, city, or continent.\n"
+                "- Do NOT say what the location 'is likely to be' or 'suggests'.\n"
+                "- Describe ONLY what is visibly present, in neutral, factual terms — e.g. "
+                "'the road has a broken yellow centre line and white edge lines' NOT 'this is "
+                "typical of X country'.\n"
+                "- Plain text, 2-3 short bullet-style lines, no markdown symbols, no location names anywhere."
+            )
         result = call_claude([{
             "role": "user",
             "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
                 {"type": "text", "text": prompt}
             ]
-        }], system="You are a visual-observation assistant. You describe only what is concretely visible in an image. You never identify, name, or guess a real-world location, no matter how confident you are — that is a hard rule with no exceptions.", max_tokens=200)
-        log_event("ai_scene_clues", user_id=user_id, username=username, ip=client_ip())
-        return jsonify({"clues": result})
+        }], system="You are a visual-observation assistant for a GeoGuessr trainer. You describe what is concretely visible in an image. You never identify, name, or guess a specific region/state/city within the map the player has already chosen — and if no country is given, you never identify one at all. That is a hard rule with no exceptions.", max_tokens=220)
+        log_event("ai_scene_clues", user_id=user_id, username=username, detail=f"known_country={known_country}", ip=client_ip())
+        return jsonify({"clues": result, "known_country": known_country})
     except Exception as e:
         return safe_error(e)
 
@@ -1391,9 +1411,12 @@ def ai_chat():
         # both for the guide-fact lookup below and for the admin log.
         correct = next((l.replace('CORRECT LOCATION:', '').strip() for l in last_analysis.split('\n') if l.startswith('CORRECT LOCATION:')), '')
         guessed = next((l.replace('THE PLAYER GUESSED:', '').replace('— THIS WAS WRONG.', '').strip() for l in last_analysis.split('\n') if l.startswith('THE PLAYER GUESSED:')), '')
+        map_country = next((l.replace('MAP COUNTRY (already known to the player, not secret):', '').strip() for l in last_analysis.split('\n') if l.startswith('MAP COUNTRY')), '')
         # correct is typically "City, State, Country" — the guide is
         # stored per-country, so take the last comma-separated part.
-        correct_country = correct.split(',')[-1].strip() if correct else ''
+        # Falls back to the map country when this is a pre-guess,
+        # country-selected scene (no "correct" answer known at all yet).
+        correct_country = (correct.split(',')[-1].strip() if correct else '') or map_country
         guide_facts = get_guide_context(correct_country, max_chars=800)
 
         has_context = bool(last_analysis.strip())
@@ -1420,14 +1443,30 @@ LENGTH — THIS IS A HARD RULE, NOT A SUGGESTION:
 
 The context you receive includes the CORRECT LOCATION, the dead giveaway clue, key visual evidence, and what the player guessed wrong. Use it to correct them firmly and briefly."""
         elif has_context:
-            system = """You are GeoX, a GeoGuessr coach helping a player think through a scene BEFORE they've locked in a guess. No guess has been made yet on this round.
+            map_country_known = 'MAP COUNTRY (already known to the player, not secret):' in last_analysis
+            if map_country_known:
+                system = """You are GeoX, a GeoGuessr coach helping a player think through a scene BEFORE they've locked in a guess. No guess has been made yet on this round.
+
+The player has already selected a specific country map (not World mode) — that country is stated in the context below and is NOT a secret, since they chose it themselves. You may discuss that country freely and specifically.
+
+WHAT YOU MUST NEVER REVEAL: the specific region, state, or city within that country. This is a hard rule with no exceptions — not even if the player directly asks "what region is this?" If asked directly, say you won't reveal it before they guess, and redirect to what's visible instead.
+
+YOUR JOB:
+- Engage with whatever the player describes, using real country-specific knowledge (typical pole types, road markings, vegetation, signage etc for that country) to help them reason toward the region themselves.
+- You may say what a clue is consistent with in general terms (e.g. "that's more typical of the South Island") without naming one specific place.
+- If VERIFIED FACTS FROM THIS SITE'S GUIDE are provided below, use them freely — the country itself isn't secret here.
+- Don't lecture — this is a back-and-forth conversation, not a correction.
+- Plain text only — no markdown, no bullet points, no asterisks.
+
+LENGTH — HARD RULE: Maximum 2 short sentences, roughly 40 words."""
+            else:
+                system = """You are GeoX, a GeoGuessr coach helping a player think through a scene BEFORE they've locked in a guess. No guess has been made yet on this round.
 
 YOU DO NOT KNOW THE ANSWER, AND EVEN IF YOU SUSPECT ONE, YOU MUST NEVER STATE IT. This is a hard rule with no exceptions: never name or clearly imply a specific country, region, state, or city — not even if the player directly asks "what region is this?" or "just tell me the country." If asked directly, say plainly that you won't reveal it before they guess, and redirect to what's visible instead. The player wants to reason it out themselves using clues, not be told the answer.
 
 YOUR JOB IS TO DISCUSS OBSERVABLE CLUES, NOT REVEAL ANYTHING:
 - Engage with whatever the player describes seeing, and add relevant general geographic context about what that TYPE of clue can indicate (e.g. "broken yellow centre lines like that rule out a lot of right-hand-drive countries" is fine; "that means you're in New Zealand" is not).
 - You may discuss what a clue is CONSISTENT WITH in general terms (a region, a hemisphere, a class of countries) without narrowing to one specific answer.
-- If VERIFIED FACTS FROM THIS SITE'S GUIDE are provided below, you may use general clue knowledge from them, but never use them to blurt out which specific country's guide it came from.
 - Don't lecture — this is a back-and-forth conversation, not a correction.
 - Plain text only — no markdown, no bullet points, no asterisks.
 
