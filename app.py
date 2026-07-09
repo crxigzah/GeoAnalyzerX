@@ -1221,6 +1221,61 @@ def ai_analyse():
     except Exception as e:
         return safe_error(e)
 
+@app.route("/ai/scene_clues", methods=["POST", "OPTIONS"])
+def ai_scene_clues():
+    """Powers GeoX chat BEFORE a guess has been made. Deliberately takes
+    ONLY the screenshot — no coordinates, no known_location, nothing
+    that could reveal the real answer — so this endpoint is structurally
+    incapable of leaking the location, not just prompt-instructed not to.
+    Describes visible clue TYPES only (road markings, vegetation, poles,
+    signage, etc.), never a specific country/region/city guess."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token     = d.get("token", "")
+    image_b64 = d.get("image", "")
+
+    if not image_b64:
+        return jsonify({"error": "No image provided"}), 400
+    img_ok, img_err = validate_image_b64(image_b64)
+    if not img_ok:
+        return jsonify({"error": img_err}), 400
+
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in", "code": "auth"}), 401
+
+    if rate_limited("ai_scene_clues", str(user_id), max_attempts=20, window_seconds=60):
+        return jsonify({"error": "Too many requests, please slow down."}), 429
+
+    if tier != "pro":
+        return jsonify({"error": "Pro required", "code": "pro"}), 403
+
+    try:
+        prompt = (
+            "Look at this GeoGuessr Street View scene. List 2-3 distinctive, concrete VISUAL "
+            "details you can actually see — road markings, vegetation type, pole/utility "
+            "infrastructure, signage style or language, architecture, terrain, driving side "
+            "if visible, license plates, anything genuinely observable.\n\n"
+            "STRICT RULES:\n"
+            "- Do NOT name or imply any specific country, region, state, city, or continent.\n"
+            "- Do NOT say what the location 'is likely to be' or 'suggests'.\n"
+            "- Describe ONLY what is visibly present, in neutral, factual terms — e.g. "
+            "'the road has a broken yellow centre line and white edge lines' NOT 'this is "
+            "typical of X country'.\n"
+            "- Plain text, 2-3 short bullet-style lines, no markdown symbols, no location names anywhere."
+        )
+        result = call_claude([{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
+                {"type": "text", "text": prompt}
+            ]
+        }], system="You are a visual-observation assistant. You describe only what is concretely visible in an image. You never identify, name, or guess a real-world location, no matter how confident you are — that is a hard rule with no exceptions.", max_tokens=200)
+        log_event("ai_scene_clues", user_id=user_id, username=username, ip=client_ip())
+        return jsonify({"clues": result})
+    except Exception as e:
+        return safe_error(e)
+
 @app.route("/ai/teaching", methods=["POST", "OPTIONS"])
 def ai_teaching():
     if request.method == "OPTIONS": return jsonify({}), 200
@@ -1365,24 +1420,25 @@ LENGTH — THIS IS A HARD RULE, NOT A SUGGESTION:
 
 The context you receive includes the CORRECT LOCATION, the dead giveaway clue, key visual evidence, and what the player guessed wrong. Use it to correct them firmly and briefly."""
         elif has_context:
-            system = """You are GeoX, an expert GeoGuessr coach helping a player think through a scene BEFORE they've locked in a guess. No guess has been made yet on this round — do not treat anything as "wrong."
+            system = """You are GeoX, a GeoGuessr coach helping a player think through a scene BEFORE they've locked in a guess. No guess has been made yet on this round.
 
-YOUR JOB IS TO DISCUSS, NOT REVEAL. Help the player reason through what's visible using their own observations and general GeoGuessr knowledge. If your own scene analysis below already names a specific location, you can reference it, but frame it as "this looks like" / "consistent with" rather than a guaranteed verdict — the player hasn't guessed yet, so there's no "correct answer" to compare against.
+YOU DO NOT KNOW THE ANSWER, AND EVEN IF YOU SUSPECT ONE, YOU MUST NEVER STATE IT. This is a hard rule with no exceptions: never name or clearly imply a specific country, region, state, or city — not even if the player directly asks "what region is this?" or "just tell me the country." If asked directly, say plainly that you won't reveal it before they guess, and redirect to what's visible instead. The player wants to reason it out themselves using clues, not be told the answer.
 
-CRITICAL RULES:
-- If the player describes something they see, engage with it directly and add relevant context (what that clue typically indicates, what else to check).
+YOUR JOB IS TO DISCUSS OBSERVABLE CLUES, NOT REVEAL ANYTHING:
+- Engage with whatever the player describes seeing, and add relevant general geographic context about what that TYPE of clue can indicate (e.g. "broken yellow centre lines like that rule out a lot of right-hand-drive countries" is fine; "that means you're in New Zealand" is not).
+- You may discuss what a clue is CONSISTENT WITH in general terms (a region, a hemisphere, a class of countries) without narrowing to one specific answer.
+- If VERIFIED FACTS FROM THIS SITE'S GUIDE are provided below, you may use general clue knowledge from them, but never use them to blurt out which specific country's guide it came from.
 - Don't lecture — this is a back-and-forth conversation, not a correction.
-- If VERIFIED FACTS FROM THIS SITE'S GUIDE are provided below, prefer those specific facts over generic knowledge.
 - Plain text only — no markdown, no bullet points, no asterisks.
 
 LENGTH — THIS IS A HARD RULE:
 - Maximum 2 short sentences, roughly 40 words. Pick the single most useful thing to say.
 
-The context below is a pre-guess scene analysis (from the Analyse feature), not a completed round's result."""
+The context below is a clue-only scene description with no location attached — treat it exactly as if you also don't know the answer."""
         else:
-            system = """You are GeoX, a GeoGuessr coach. The player hasn't analysed this scene yet — there's no location or clue data available for you to discuss.
+            system = """You are GeoX, a GeoGuessr coach. There's no scene or location data available for this question — either the player isn't currently in a round, or the automatic scene analysis didn't succeed.
 
-Tell them in ONE short sentence to press Analyse (or F7) first so you have something to talk about, unless their message is a general GeoGuessr question you can just answer directly and briefly. Plain text only, no markdown."""
+Tell them in ONE short sentence that you couldn't get a read on the current scene — suggest joining an active round and asking again — unless their message is a general GeoGuessr question you can just answer directly and briefly. Plain text only, no markdown."""
         user_content = f"{last_analysis[:600]}"
         if guide_facts:
             user_content += f"\n\nVERIFIED FACTS FROM THIS SITE'S {correct_country} GUIDE:\n{guide_facts}"
