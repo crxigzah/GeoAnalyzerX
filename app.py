@@ -1976,13 +1976,24 @@ def ai_check_scene_quality(image_b64):
                     "content": [
                         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
                         {"type": "text", "text": (
-                            "Is this a CLEAN Google Street View scene of an outdoor real-world "
-                            "location, with NO overlaid UI visible anywhere in the frame? Reply "
-                            "NO if you see any of: a chat panel, sidebar, HUD, button, text box, "
-                            "compass overlay, score/round counter, browser extension panel, "
-                            "userscript panel, watermark, or any other interface element drawn "
-                            "on top of the photo — even a small one in a corner. Reply YES only "
-                            "if it's a genuinely clean, unobstructed scene. Reply only YES or NO."
+                            "Is this a genuine Google Street View scene of an outdoor "
+                            "real-world location, viewed through the normal GeoGuessr game "
+                            "interface? Reply YES even if GeoGuessr's OWN standard interface "
+                            "is visible — its compass/heading strip along the top, the round "
+                            "number and score display, the small minimap in a corner, zoom "
+                            "controls, or the GeoGuessr logo are all completely normal and "
+                            "expected, NOT a problem.\n\n"
+                            "Reply NO only if the image is NOT outdoor street-level scenery "
+                            "at all (a selfie, a menu/loading screen, a blank/black frame, a "
+                            "screenshot of something unrelated), OR if it's covered by a "
+                            "THIRD-PARTY addition that has nothing to do with GeoGuessr's own "
+                            "interface — a browser extension's control panel, a chat window, "
+                            "a userscript's training-mode banner or button list, or similar — "
+                            "where that third-party element takes up a meaningful part of the "
+                            "frame. A small watermark or a sliver of a panel in one corner "
+                            "that leaves the actual scene clearly visible is still fine — "
+                            "reply YES in that case.\n\n"
+                            "Reply only YES or NO."
                         )}
                     ]
                 }]
