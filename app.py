@@ -182,6 +182,8 @@ def init_db():
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE")
             conn.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS active_badge_country TEXT")
+            conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS quality_checked_at TIMESTAMPTZ")
+            conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS quality_reason TEXT")
         except: pass
         try:
             conn.run("ALTER TABLE users ADD CONSTRAINT users_phone_number_key UNIQUE (phone_number)")
@@ -2245,6 +2247,142 @@ def scene_count():
         rows = conn.run("SELECT state, COUNT(*) FROM scenes GROUP BY state ORDER BY COUNT(*) DESC")
         conn.close()
         return jsonify({"counts": [{"state": r[0], "count": r[1]} for r in rows]})
+    except Exception as e:
+        return safe_error(e)
+
+def scene_public_url(r2_key):
+    return f"{SUPABASE_URL}/storage/v1/object/public/{STORAGE_BUCKET}/{r2_key}"
+
+@app.route("/admin/scenes/list", methods=["GET","OPTIONS"])
+def admin_scenes_list():
+    """Browse the community scene library — filterable by upload date
+    range, country, and quality-check status, sortable by date or
+    quality. Powers the Scene Library panel in admin.html."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+
+    date_from = request.args.get("date_from", "")
+    date_to   = request.args.get("date_to", "")
+    country   = request.args.get("country", "")
+    quality   = request.args.get("quality", "all")  # all | unchecked | passed | failed
+    sort      = request.args.get("sort", "newest")  # newest | oldest | quality_desc | quality_asc
+    limit     = min(int(request.args.get("limit", 60) or 60), 200)
+    offset    = int(request.args.get("offset", 0) or 0)
+
+    where = ["1=1"]
+    params = {}
+    if date_from:
+        where.append("uploaded_at >= :date_from")
+        params["date_from"] = date_from
+    if date_to:
+        where.append("uploaded_at <= :date_to")
+        params["date_to"] = date_to
+    if country:
+        where.append("country = :country")
+        params["country"] = country
+    if quality == "unchecked":
+        where.append("quality_checked_at IS NULL")
+    elif quality == "passed":
+        where.append("quality_checked_at IS NOT NULL AND quality_score = 1")
+    elif quality == "failed":
+        where.append("quality_checked_at IS NOT NULL AND quality_score = 0")
+
+    order = {
+        "newest": "uploaded_at DESC",
+        "oldest": "uploaded_at ASC",
+        "quality_desc": "quality_score DESC, uploaded_at DESC",
+        "quality_asc": "quality_score ASC, uploaded_at DESC",
+    }.get(sort, "uploaded_at DESC")
+
+    where_sql = " AND ".join(where)
+    try:
+        conn = get_db()
+        total_row = conn.run(f"SELECT COUNT(*) FROM scenes WHERE {where_sql}", **params)
+        total = total_row[0][0] if total_row else 0
+        rows = conn.run(f"""SELECT id, country, state, region, r2_key, quality_score,
+                quality_checked_at, quality_reason, times_used, uploaded_at
+            FROM scenes WHERE {where_sql}
+            ORDER BY {order} LIMIT :limit OFFSET :offset""",
+            limit=limit, offset=offset, **params)
+        conn.close()
+        scenes = [{
+            "id": str(r[0]), "country": r[1], "state": r[2], "region": r[3],
+            "r2_key": r[4], "image_url": scene_public_url(r[4]),
+            "quality_score": r[5], "quality_checked_at": str(r[6]) if r[6] else None,
+            "quality_reason": r[7], "times_used": r[8], "uploaded_at": str(r[9]),
+        } for r in rows]
+        return jsonify({"scenes": scenes, "total": total, "limit": limit, "offset": offset})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/scenes/recheck_quality", methods=["POST","OPTIONS"])
+def admin_scenes_recheck_quality():
+    """Runs the same AI quality checker that gates new uploads against
+    ALREADY-uploaded scenes — either a specific list of scene_ids, or a
+    batch of not-yet-checked ones. Capped per call to keep response
+    times reasonable; the admin panel calls this repeatedly to work
+    through a backlog."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+
+    d = request.json or {}
+    scene_ids = d.get("scene_ids") or []
+    batch_unchecked = bool(d.get("unchecked_only"))
+    batch_limit = min(int(d.get("limit") or 20), 50)
+
+    try:
+        conn = get_db()
+        if scene_ids:
+            rows = conn.run("SELECT id, r2_key FROM scenes WHERE id = ANY(:ids)", ids=scene_ids)
+        elif batch_unchecked:
+            rows = conn.run("""SELECT id, r2_key FROM scenes
+                WHERE quality_checked_at IS NULL
+                ORDER BY uploaded_at ASC LIMIT :lim""", lim=batch_limit)
+        else:
+            conn.close()
+            return jsonify({"error": "Provide scene_ids or unchecked_only"}), 400
+
+        results = []
+        for scene_id, r2_key in rows:
+            b64 = get_storage_image_b64(r2_key)
+            if not b64:
+                results.append({"id": str(scene_id), "checked": False, "reason": "could not fetch image"})
+                continue
+            passed, reason = ai_check_scene_quality(b64)
+            conn.run("""UPDATE scenes SET quality_score=:score, quality_checked_at=NOW(), quality_reason=:reason
+                WHERE id=:id""", score=1 if passed else 0, reason=reason, id=scene_id)
+            results.append({"id": str(scene_id), "checked": True, "passed": passed, "reason": reason})
+        conn.close()
+
+        passed_count = sum(1 for r in results if r.get("passed"))
+        failed_count = sum(1 for r in results if r.get("checked") and not r.get("passed"))
+        return jsonify({"results": results, "checked": len(results), "passed": passed_count, "failed": failed_count})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/scenes/delete/<scene_id>", methods=["DELETE","OPTIONS"])
+def admin_scenes_delete(scene_id):
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT r2_key FROM scenes WHERE id=:id", id=scene_id)
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Not found"}), 404
+        r2_key = rows[0][0]
+        conn.run("DELETE FROM scenes WHERE id=:id", id=scene_id)
+        conn.close()
+        try:
+            import requests
+            del_url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{r2_key}"
+            requests.delete(del_url, headers={"Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=15)
+        except Exception as e:
+            print("Storage delete error (row already removed):", e)
+        return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
 
