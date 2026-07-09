@@ -1341,7 +1341,11 @@ def ai_chat():
         correct_country = correct.split(',')[-1].strip() if correct else ''
         guide_facts = get_guide_context(correct_country, max_chars=800)
 
-        system = """You are GeoX, an expert GeoGuessr analyst who teaches players after they guessed WRONG.
+        has_context = bool(last_analysis.strip())
+        is_post_guess = bool(guessed)  # "THE PLAYER GUESSED:" line present = a real completed round
+
+        if is_post_guess:
+            system = """You are GeoX, an expert GeoGuessr analyst who teaches players after they guessed WRONG.
 
 YOUR JOB IS TO TEACH, NOT TO PLEASE. The player already guessed incorrectly — your role is to help them understand WHY they were wrong and what they should have seen. You know the correct location with certainty.
 
@@ -1360,6 +1364,25 @@ LENGTH — THIS IS A HARD RULE, NOT A SUGGESTION:
 - If you have more to say than fits, pick the ONE most decisive clue and say only that.
 
 The context you receive includes the CORRECT LOCATION, the dead giveaway clue, key visual evidence, and what the player guessed wrong. Use it to correct them firmly and briefly."""
+        elif has_context:
+            system = """You are GeoX, an expert GeoGuessr coach helping a player think through a scene BEFORE they've locked in a guess. No guess has been made yet on this round — do not treat anything as "wrong."
+
+YOUR JOB IS TO DISCUSS, NOT REVEAL. Help the player reason through what's visible using their own observations and general GeoGuessr knowledge. If your own scene analysis below already names a specific location, you can reference it, but frame it as "this looks like" / "consistent with" rather than a guaranteed verdict — the player hasn't guessed yet, so there's no "correct answer" to compare against.
+
+CRITICAL RULES:
+- If the player describes something they see, engage with it directly and add relevant context (what that clue typically indicates, what else to check).
+- Don't lecture — this is a back-and-forth conversation, not a correction.
+- If VERIFIED FACTS FROM THIS SITE'S GUIDE are provided below, prefer those specific facts over generic knowledge.
+- Plain text only — no markdown, no bullet points, no asterisks.
+
+LENGTH — THIS IS A HARD RULE:
+- Maximum 2 short sentences, roughly 40 words. Pick the single most useful thing to say.
+
+The context below is a pre-guess scene analysis (from the Analyse feature), not a completed round's result."""
+        else:
+            system = """You are GeoX, a GeoGuessr coach. The player hasn't analysed this scene yet — there's no location or clue data available for you to discuss.
+
+Tell them in ONE short sentence to press Analyse (or F7) first so you have something to talk about, unless their message is a general GeoGuessr question you can just answer directly and briefly. Plain text only, no markdown."""
         user_content = f"{last_analysis[:600]}"
         if guide_facts:
             user_content += f"\n\nVERIFIED FACTS FROM THIS SITE'S {correct_country} GUIDE:\n{guide_facts}"
