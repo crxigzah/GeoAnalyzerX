@@ -2431,7 +2431,7 @@ def admin_scenes_recheck_quality():
     d = request.json or {}
     scene_ids = d.get("scene_ids") or []
     batch_unchecked = bool(d.get("unchecked_only"))
-    batch_limit = min(int(d.get("limit") or 20), 50)
+    batch_limit = min(int(d.get("limit") or 20), 10)
 
     try:
         conn = get_db()
