@@ -2202,16 +2202,11 @@ def ai_check_scene_quality(image_b64, country=None):
                             "blank/black frame, or an extreme macro-style close-up with no context "
                             "at all. GeoGuessr's OWN normal compass strip, round/score display, "
                             "zoom controls, and logo are all fine regardless.\n\n"
-                            "CONSISTENCY IS MANDATORY: your ANSWER must directly follow from what "
-                            "you wrote in THINK. If your THINK reasoning does not explicitly name "
-                            "one of the specific problems above (expanded map, third-party overlay, "
-                            "camera pitched down at the ground, genuine motion-blur streaking, or "
-                            "not a real outdoor scene) — meaning everything you described sounds "
-                            "fine — your ANSWER must be YES. Do not answer NO unless your THINK "
-                            "text explicitly identifies which specific rule was violated.\n\n"
                             "Respond in EXACTLY this format, nothing else:\n"
                             "THINK: [one short sentence on what you actually see]\n"
-                            "ANSWER: YES or NO"
+                            "VIOLATION: none, expanded_map, third_party_overlay, motion_blur, "
+                            "bad_angle, or not_outdoor — pick 'none' if the photo is genuinely fine\n"
+                            "ANSWER: YES or NO — must be YES if VIOLATION is 'none'"
                         )}
                     ]
                 }]
@@ -2221,43 +2216,34 @@ def ai_check_scene_quality(image_b64, country=None):
         raw = resp.json().get("content", [{}])[0].get("text", "").strip()
         answer_line = next((l for l in raw.split('\n') if l.upper().startswith('ANSWER:')), raw)
         passed = 'YES' in answer_line.upper()
+        violation_line = next((l for l in raw.split('\n') if l.upper().startswith('VIOLATION:')), '')
+        violation = violation_line.split(':', 1)[1].strip().lower() if violation_line else ''
         # Store/display just the reasoning sentence, not the raw
-        # "THINK: ..." / "ANSWER: ..." formatting — cleaner for an
-        # admin glancing at a card in the Scene Library.
+        # "THINK: ..." / "VIOLATION: ..." / "ANSWER: ..." formatting —
+        # cleaner for an admin glancing at a card in the Scene Library.
         think_line = next((l for l in raw.split('\n') if l.upper().startswith('THINK:')), raw)
         clean_reason = think_line.split(':', 1)[1].strip() if ':' in think_line else think_line
-        # Defensive: the model doesn't always put THINK and ANSWER on
-        # separate lines like the format asks — if it ran them together,
-        # the split above would have grabbed the trailing "ANSWER: NO"
-        # too. Strip anything from "ANSWER:" onward regardless.
-        answer_idx = clean_reason.upper().find('ANSWER:')
-        if answer_idx != -1:
-            clean_reason = clean_reason[:answer_idx].strip()
+        # Defensive: the model doesn't always put THINK/VIOLATION/ANSWER
+        # on separate lines like the format asks — if it ran them
+        # together, the split above would have grabbed the trailing
+        # fields too. Strip anything from either onward regardless.
+        for marker in ('VIOLATION:', 'ANSWER:'):
+            idx = clean_reason.upper().find(marker)
+            if idx != -1:
+                clean_reason = clean_reason[:idx].strip()
 
-        # Code-level consistency backstop: the "consistency is mandatory"
-        # prompt instruction turned out not to be reliable enough on its
-        # own — a fast/small model only gets one sentence of visible
-        # reasoning, and more than once that sentence described a
-        # perfectly fine photo (normal angle, small minimap, modern
-        # clarity) while still answering NO. Rather than keep trusting
-        # the model to self-police that, check its own stated reasoning
-        # for an actual violation keyword before accepting a NO verdict.
-        # Wrongly rejecting a genuinely good photo is worse for the
-        # library than occasionally letting a border-line one through.
-        if not passed:
-            violation_keywords = [
-                'expand', 'overlay', 'place your pin', 'zoom control',
-                'extension', 'chat', 'panel', 'banner', 'browser',
-                'blur', 'streak', 'smear', 'smudg', 'dragged',
-                'pitched down', 'no horizon', 'ground fill', 'close-up',
-                'closeup', 'macro', 'zoomed in',
-                'selfie', 'menu', 'loading screen', 'blank', 'black frame',
-                'not outdoor', 'not a street', 'not street view',
-            ]
-            if not any(kw in clean_reason.lower() for kw in violation_keywords):
-                print(f"GeoAnalyzerX: scene quality check — overriding NO to YES, reasoning named no specific violation: {clean_reason!r}")
-                passed = True
-                clean_reason = clean_reason + " (auto-corrected: AI said NO but named no specific violation)"
+        # Code-level consistency backstop: a free-text "consistency is
+        # mandatory" instruction, and later a keyword-matching check on
+        # the reasoning text, both turned out unreliable — the keyword
+        # approach specifically couldn't tell "no motion blur" from
+        # "motion blur present", since both contain the word "blur".
+        # Checking this explicit structured field instead sidesteps
+        # that entirely — the model has to commit to a specific
+        # category rather than free text we'd have to parse for intent.
+        if not passed and violation == 'none':
+            print(f"GeoAnalyzerX: scene quality check — overriding NO to YES, VIOLATION was 'none': {clean_reason!r}")
+            passed = True
+            clean_reason = clean_reason + " (auto-corrected: AI said NO but flagged no actual violation)"
         print(f"GeoAnalyzerX: scene quality check — passed={passed} | raw response: {raw!r}")
         return passed, clean_reason
     except Exception as e:
@@ -2732,6 +2718,39 @@ def admin_scenes_categorize_generation():
             if r.get("checked"):
                 by_gen[r["generation"]] = by_gen.get(r["generation"], 0) + 1
         return jsonify({"results": results, "checked": len(results), "by_generation": by_gen})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/scenes/manual_pass_bulk", methods=["POST","OPTIONS"])
+def admin_scenes_manual_pass_bulk():
+    """Bulk version of the manual-pass override — either a specific
+    scene_ids list (from the Scene Library's checkbox multi-select), or
+    all_failed=true to pass every currently-failed scene in the library
+    in one go. No AI calls involved here at all (unlike quality/
+    generation batch processing), so this is a single fast DB write
+    rather than the slower per-image auto-loop pattern used elsewhere —
+    no timeout risk, no need to chain requests together."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    scene_ids = d.get("scene_ids") or []
+    all_failed = bool(d.get("all_failed"))
+    try:
+        conn = get_db()
+        if scene_ids:
+            result = conn.run("""UPDATE scenes SET quality_score=1, quality_checked_at=NOW(),
+                    quality_reason='Manually approved by admin override (bulk)'
+                WHERE id = ANY(:ids) RETURNING id""", ids=scene_ids)
+        elif all_failed:
+            result = conn.run("""UPDATE scenes SET quality_score=1, quality_checked_at=NOW(),
+                    quality_reason='Manually approved by admin override (bulk — all failed)'
+                WHERE quality_checked_at IS NOT NULL AND quality_score = 0 RETURNING id""")
+        else:
+            conn.close()
+            return jsonify({"error": "Provide scene_ids or all_failed"}), 400
+        conn.close()
+        return jsonify({"success": True, "updated": len(result)})
     except Exception as e:
         return safe_error(e)
 
