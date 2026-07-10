@@ -2161,15 +2161,18 @@ def ai_check_scene_quality(image_b64, country=None):
                             "different from genuine motion-blur streaking (a directional smear "
                             "pattern, not uniform softness) or a bad zoom/close-up, which still "
                             "fail regardless of camera generation.\n\n"
-                            "1. AN EXPANDED GUESSING MAP. Concrete things to look for: a solid "
-                            "blue/green/tan colored map area with visible roads or region/country "
-                            "borders, place-name text labels (city or country names printed on "
-                            "the map), a map zoom +/- control cluster, or text like 'Place your "
-                            "pin'. If you see ANY of these covering a meaningful chunk of the "
-                            "image (clearly more than a small corner square, even if the street "
-                            "scene is still partly visible alongside it), this FAILS — reject it, "
-                            "even though the map is GeoGuessr's own normal feature. A genuinely "
-                            "small, corner-sized minimap with no big label text is fine.\n\n"
+                            "1. AN EXPANDED GUESSING MAP. SIZE is what actually matters here, not "
+                            "content — GeoGuessr's normal small corner minimap ALWAYS shows some "
+                            "roads, region borders, or place names, even at its default tiny size, "
+                            "and that is completely normal, not a violation. Only flag this if the "
+                            "map has been EXPANDED to a large panel — clearly more than a small "
+                            "corner square, taking up a meaningful chunk of the actual frame (e.g. "
+                            "a quarter or more of the image), such as when a player expands it to "
+                            "place their pin, often with visible zoom +/- controls or text like "
+                            "'Place your pin'. If the map is still small and tucked in a corner, "
+                            "it is fine regardless of what's visible on it — do not fail an image "
+                            "just because its normal minimap happens to show a road, a border line, "
+                            "or a country/region name.\n\n"
                             "2. THIRD-PARTY overlays — a browser extension panel, a chat window, "
                             "a userscript banner or button list — covering a meaningful part of "
                             "the frame. A small watermark/sliver that leaves the scene clearly "
@@ -2230,6 +2233,31 @@ def ai_check_scene_quality(image_b64, country=None):
         answer_idx = clean_reason.upper().find('ANSWER:')
         if answer_idx != -1:
             clean_reason = clean_reason[:answer_idx].strip()
+
+        # Code-level consistency backstop: the "consistency is mandatory"
+        # prompt instruction turned out not to be reliable enough on its
+        # own — a fast/small model only gets one sentence of visible
+        # reasoning, and more than once that sentence described a
+        # perfectly fine photo (normal angle, small minimap, modern
+        # clarity) while still answering NO. Rather than keep trusting
+        # the model to self-police that, check its own stated reasoning
+        # for an actual violation keyword before accepting a NO verdict.
+        # Wrongly rejecting a genuinely good photo is worse for the
+        # library than occasionally letting a border-line one through.
+        if not passed:
+            violation_keywords = [
+                'expand', 'overlay', 'place your pin', 'zoom control',
+                'extension', 'chat', 'panel', 'banner', 'browser',
+                'blur', 'streak', 'smear', 'smudg', 'dragged',
+                'pitched down', 'no horizon', 'ground fill', 'close-up',
+                'closeup', 'macro', 'zoomed in',
+                'selfie', 'menu', 'loading screen', 'blank', 'black frame',
+                'not outdoor', 'not a street', 'not street view',
+            ]
+            if not any(kw in clean_reason.lower() for kw in violation_keywords):
+                print(f"GeoAnalyzerX: scene quality check — overriding NO to YES, reasoning named no specific violation: {clean_reason!r}")
+                passed = True
+                clean_reason = clean_reason + " (auto-corrected: AI said NO but named no specific violation)"
         print(f"GeoAnalyzerX: scene quality check — passed={passed} | raw response: {raw!r}")
         return passed, clean_reason
     except Exception as e:
