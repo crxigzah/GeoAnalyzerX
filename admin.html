@@ -1,0 +1,2952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GeoAnalyzerX Admin</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #08080f; color: #e0e0f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+  
+  #login-screen { display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  .login-box { background:#12121e; border:1px solid #1e1e2e; border-radius:16px; padding:40px; width:340px; text-align:center; }
+  .login-box h1 { font-size:22px; font-weight:800; margin-bottom:6px; }
+  .login-box p { color:#8888aa; font-size:13px; margin-bottom:24px; }
+  .login-box input { width:100%; padding:12px; background:#1a1a2e; border:1px solid #2a2a3e; border-radius:8px; color:#e0e0f0; font-size:14px; margin-bottom:12px; outline:none; }
+  .login-box input:focus { border-color:#00c9a7; }
+  .btn { padding:12px 20px; border:none; border-radius:8px; cursor:pointer; font-size:13px; font-weight:700; transition:opacity .2s; }
+  .btn:hover { opacity:.85; }
+  .btn-primary { background:linear-gradient(135deg,#00c9a7,#00a87d); color:#000; width:100%; }
+  .btn-danger  { background:rgba(255,100,100,.15); color:#ff6b6b; border:1px solid rgba(255,100,100,.3); }
+  .btn-purple  { background:linear-gradient(135deg,#7c3aed,#5b21b6); color:#fff; }
+  .btn-sm { padding:5px 12px; font-size:11px; }
+
+  #dashboard { display:none; }
+  nav { background:#12121e; border-bottom:1px solid #1e1e2e; padding:0 32px; display:flex; align-items:center; justify-content:space-between; height:56px; }
+  nav h1 { font-size:16px; font-weight:800; background:linear-gradient(135deg,#00c9a7,#7c3aed); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  nav .nav-right { display:flex; align-items:center; gap:12px; font-size:12px; color:#8888aa; }
+
+  .page { padding:32px; max-width:1200px; margin:0 auto; }
+  
+  .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:16px; margin-bottom:32px; }
+  .stat-card { background:#12121e; border:1px solid #1e1e2e; border-radius:12px; padding:20px; }
+  .stat-card .num { font-size:32px; font-weight:800; background:linear-gradient(135deg,#00c9a7,#7c3aed); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .stat-card .label { font-size:12px; color:#8888aa; margin-top:4px; }
+
+  .card { background:#12121e; border:1px solid #1e1e2e; border-radius:12px; overflow:hidden; margin-bottom:24px; }
+  .card-header { padding:16px 20px; border-bottom:1px solid #1e1e2e; display:flex; align-items:center; justify-content:space-between; }
+  .card-header h2 { font-size:14px; font-weight:700; }
+  .card-header span { font-size:12px; color:#8888aa; }
+
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; padding:10px 16px; color:#8888aa; font-size:11px; font-weight:600; letter-spacing:.5px; text-transform:uppercase; border-bottom:1px solid #1e1e2e; }
+  td { padding:12px 16px; border-bottom:1px solid #0d0d18; }
+  tr:last-child td { border-bottom:none; }
+  tr:hover td { background:rgba(255,255,255,.02); }
+
+  .badge { display:inline-block; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; }
+  .badge-pro  { background:rgba(240,165,0,.15); color:#f0a500; border:1px solid rgba(240,165,0,.3); }
+  .badge-free { background:rgba(0,201,167,.1); color:#00c9a7; border:1px solid rgba(0,201,167,.2); }
+  .badge-banned { background:rgba(255,100,100,.15); color:#ff6b6b; border:1px solid rgba(255,100,100,.3); }
+
+  .ban-menu { position:relative; display:inline-block; }
+  .ban-dropdown {
+    position:absolute; top:100%; right:0; margin-top:4px;
+    background:#1a1a2e; border:1px solid #2a2a3e; border-radius:8px;
+    min-width:140px; z-index:100; display:none; overflow:hidden;
+    box-shadow:0 10px 30px rgba(0,0,0,.5);
+  }
+  .ban-dropdown.open { display:block; }
+  .ban-dropdown button {
+    display:block; width:100%; text-align:left; padding:8px 12px;
+    background:none; border:none; color:#e0e0f0; font-size:12px; cursor:pointer;
+  }
+  .ban-dropdown button:hover { background:rgba(255,100,100,.1); color:#ff6b6b; }
+
+  .search-bar { padding:16px 20px; border-bottom:1px solid #1e1e2e; }
+  .search-bar input { width:100%; max-width:300px; padding:8px 12px; background:#1a1a2e; border:1px solid #2a2a3e; border-radius:8px; color:#e0e0f0; font-size:13px; outline:none; }
+  .search-bar input:focus { border-color:#00c9a7; }
+
+  .tab-bar { display:flex; gap:4px; padding:16px 20px 0; border-bottom:1px solid #1e1e2e; }
+  .tab { padding:8px 16px; border:none; background:none; color:#8888aa; cursor:pointer; font-size:13px; font-weight:600; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab.active { color:#00c9a7; border-bottom-color:#00c9a7; }
+
+  .usage-bar-wrap { background:#1a1a2e; border-radius:4px; height:6px; width:80px; display:inline-block; vertical-align:middle; }
+  .usage-bar { height:100%; border-radius:4px; background:#00c9a7; }
+
+  .toast { position:fixed; bottom:24px; right:24px; background:#1e1e2e; border:1px solid #2a2a3e; border-radius:10px; padding:12px 18px; font-size:13px; z-index:9999; opacity:0; transition:opacity .3s; pointer-events:none; }
+  .toast.show { opacity:1; }
+
+  .empty { text-align:center; padding:40px; color:#5a5a7a; font-size:13px; }
+
+  @media(max-width:600px) {
+    .page { padding:16px; }
+    nav { padding:0 16px; }
+    .stats-grid { grid-template-columns:1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login-screen">
+  <div class="login-box">
+    <div style="font-size:32px;margin-bottom:12px">🌍</div>
+    <h1>GeoAnalyzerX Admin</h1>
+    <p>Sign in with your admin account</p>
+    <input type="email" id="admin-email-input" placeholder="Email" onkeydown="if(event.key==='Enter')doLogin()">
+    <input type="password" id="admin-password-input" placeholder="Password" onkeydown="if(event.key==='Enter')doLogin()">
+    <input type="password" id="admin-key-input" placeholder="Admin key" onkeydown="if(event.key==='Enter')doLogin()">
+    <input type="text" id="admin-totp-input" placeholder="2FA code (if enabled)" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn btn-primary" onclick="doLogin()">Sign In</button>
+    <div id="login-error" style="color:#ff6b6b;font-size:12px;margin-top:10px;display:none;">Invalid credentials, admin key, or account is not an admin</div>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboard">
+  <nav>
+    <h1>GeoAnalyzerX Admin</h1>
+    <div class="nav-right">
+      <span id="nav-status">●</span>
+      <span id="nav-time"></span>
+      <button class="btn btn-sm" onclick="refreshAll()" style="background:#1a1a2e;border:1px solid #2a2a3e;color:#e0e0f0;">↻ Refresh</button>
+    </div>
+  </nav>
+
+  <div class="page">
+    <!-- Stats -->
+    <div class="stats-grid" id="stats-grid">
+      <div class="stat-card"><div class="num" id="s-total">—</div><div class="label">Total Users</div></div>
+      <div class="stat-card"><div class="num" id="s-pro">—</div><div class="label">Pro Users</div></div>
+      <div class="stat-card"><div class="num" id="s-free">—</div><div class="label">Free Users</div></div>
+      <div class="stat-card"><div class="num" id="s-scenes">—</div><div class="label">Community Scenes</div></div>
+      <div class="stat-card"><div class="num" id="s-new">—</div><div class="label">New Today</div></div>
+    </div>
+
+    <!-- Today's Usage -->
+    <div class="card">
+      <div class="card-header"><h2>📊 Today's Usage</h2><span id="usage-date"></span></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>User</th><th>Tier</th><th>F7 Captures</th><th>Guides</th><th>Analyses</th></tr></thead>
+          <tbody id="usage-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Users -->
+    <div class="card">
+      <div class="card-header"><h2>👥 All Users</h2><span id="user-count"></span></div>
+      <div class="search-bar">
+        <input type="text" id="user-search" placeholder="Search by username or email..." oninput="filterUsers()">
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Username</th><th>Email</th><th>Tier</th><th>Verified</th><th>Phone</th><th>Admin</th><th>Signed Up</th><th>Last Login</th><th>Actions</th></tr></thead>
+          <tbody id="users-tbody"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Logs -->
+    <div class="card">
+      <div class="card-header">
+        <h2>📋 Logs</h2>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="text" id="log-search" placeholder="Search..." oninput="filterLogs()" style="max-width:220px;padding:6px 10px;background:#0d0d1a;border:1px solid #2a2a3e;border-radius:6px;color:#e0e0f0;font-size:12px;">
+          <button class="btn btn-sm" style="background:#1a1a2e;border:1px solid #2a2a3e;color:#8888aa;padding:6px 12px;" onclick="loadAllLogs()">↻ Refresh</button>
+          <span id="log-count" style="color:#8888aa;font-size:12px;"></span>
+        </div>
+      </div>
+      <div class="tab-bar" style="padding:0 20px;margin-bottom:0;">
+        <button class="tab active" onclick="switchLogTab('all', this)">All</button>
+        <button class="tab" onclick="switchLogTab('auth', this)">🔐 Auth</button>
+        <button class="tab" onclick="switchLogTab('security', this)">🚨 Security</button>
+        <button class="tab" onclick="switchLogTab('ai', this)">🤖 AI Usage</button>
+        <button class="tab" onclick="switchLogTab('scenes', this)">📸 Scenes</button>
+        <button class="tab" onclick="switchLogTab('admin', this)">⚙️ Admin Actions</button>
+        <button class="tab" onclick="switchLogTab('chat', this)">💬 GeoX Chat</button>
+      </div>
+
+      <!-- Activity log table (all tabs except chat) -->
+      <div id="log-activity-panel" style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Time</th><th>Event</th><th>User</th><th>Detail</th><th>IP</th></tr></thead>
+          <tbody id="log-activity-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- Chat log table (chat tab only) -->
+      <div id="log-chat-panel" style="overflow-x:auto;display:none">
+        <table>
+          <thead><tr><th>Time</th><th>User</th><th>Correct Location</th><th>Guessed</th><th>Player Said</th><th>GeoX Replied</th></tr></thead>
+          <tbody id="log-chat-tbody"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Country Guides -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🗺️ Country Meta Guides</h2>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-sm" style="background:rgba(124,58,237,0.15);border:1px solid rgba(124,58,237,0.3);color:#c4a0ff;padding:7px 14px;" onclick="showProgressTracker()">📊 Progress</button>
+          <button class="btn btn-sm" style="background:rgba(240,165,0,0.15);border:1px solid rgba(240,165,0,0.3);color:#f0a500;padding:7px 14px;" onclick="showBatchScaffold()">🚀 Batch-Scaffold</button>
+          <button class="btn btn-sm" style="background:rgba(0,201,167,0.15);border:1px solid rgba(0,201,167,0.3);color:#00c9a7;padding:7px 14px;" onclick="openGuideEditor(null)">+ Write New Guide</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Country</th><th>ISO</th><th>Source</th><th>Last Updated</th><th>Actions</th></tr></thead>
+          <tbody id="guides-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Camera Generation Quiz -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🎥 Camera Generation Quiz Images</h2>
+      </div>
+      <div style="padding:16px;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">Correct Generation</label>
+          <select id="camera-quiz-gen-select" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;">
+            <option>Gen 1</option>
+            <option>Gen 2</option>
+            <option>Gen 3</option>
+            <option>Gen 4</option>
+            <option>Trekker / Other</option>
+          </select>
+        </div>
+        <div>
+          <input type="file" id="camera-quiz-file-input" accept="image/*" style="display:none" onchange="uploadCameraQuizImage(this.files[0])">
+          <button class="btn btn-sm" style="background:rgba(0,201,167,0.15);border:1px solid rgba(0,201,167,0.3);color:#00c9a7;padding:9px 16px;" onclick="document.getElementById('camera-quiz-file-input').click()">📤 Upload Labeled Image</button>
+        </div>
+        <div id="camera-quiz-upload-status" style="font-size:12px;color:var(--muted);"></div>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Preview</th><th>Correct Generation</th><th>Uploaded</th><th>Actions</th></tr></thead>
+          <tbody id="camera-quiz-tbody"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Photo-guess training games: Bollard Bingo, Sign Shape Sprint,
+         Vegetation Snap, License Plate Guess — one shared upload system -->
+    <div class="card">
+      <div class="card-header">
+        <h2>📸 Country-Guess Training Games</h2>
+      </div>
+      <div style="padding:16px;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">Game</label>
+          <select id="photo-quiz-type-select" onchange="loadPhotoQuizList()" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;">
+            <option value="bollard">Bollard Bingo</option>
+            <option value="sign_shape">Sign Shape Sprint</option>
+            <option value="vegetation">Vegetation Snap</option>
+            <option value="license_plate">License Plate Guess</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">Correct Country</label>
+          <select id="photo-quiz-country-select" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;max-width:200px;"></select>
+        </div>
+        <div>
+          <input type="file" id="photo-quiz-file-input" accept="image/*" style="display:none" onchange="uploadPhotoQuizImage(this.files[0])">
+          <button class="btn btn-sm" style="background:rgba(0,201,167,0.15);border:1px solid rgba(0,201,167,0.3);color:#00c9a7;padding:9px 16px;" onclick="document.getElementById('photo-quiz-file-input').click()">📤 Upload Labeled Image</button>
+        </div>
+        <div id="photo-quiz-upload-status" style="font-size:12px;color:var(--muted);"></div>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Preview</th><th>Correct Country</th><th>Uploaded</th><th>Actions</th></tr></thead>
+          <tbody id="photo-quiz-tbody"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Scene Library — browse, time-filter, and quality-check the
+         community photo library that feeds teaching reference images -->
+    <div class="card">
+      <div class="card-header">
+        <h2>🖼️ Scene Library</h2>
+      </div>
+      <div style="padding:16px;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">From</label>
+          <input type="date" id="scenes-date-from" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;">
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">To</label>
+          <input type="date" id="scenes-date-to" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;">
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">Quality</label>
+          <select id="scenes-quality-filter" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;">
+            <option value="all">All</option>
+            <option value="unchecked">Not yet checked</option>
+            <option value="passed">Passed</option>
+            <option value="failed">Failed</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">Sort</label>
+          <select id="scenes-sort" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="quality_asc">Lowest quality first</option>
+            <option value="quality_desc">Highest quality first</option>
+          </select>
+        </div>
+        <button class="btn btn-sm" style="background:rgba(0,201,167,0.15);border:1px solid rgba(0,201,167,0.3);color:#00c9a7;padding:9px 16px;" onclick="scenesOffset=0;loadScenesList()">🔍 Apply Filters</button>
+        <button class="btn btn-sm" style="background:rgba(124,58,237,0.15);border:1px solid rgba(124,58,237,0.3);color:#a78bfa;padding:9px 16px;" onclick="recheckSceneQuality()" id="scenes-recheck-btn">🤖 Re-check Quality (next 20 unchecked)</button>
+        <button class="btn btn-sm" style="background:rgba(124,58,237,0.15);border:1px solid rgba(124,58,237,0.3);color:#a78bfa;padding:9px 16px;" onclick="autoProcessAllUnchecked()" id="scenes-autoprocess-btn">🤖 Process ALL Unchecked (auto)</button>
+        <button class="btn btn-sm" style="background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);color:#ff6b6b;padding:9px 16px;display:none;" onclick="stopAutoProcessAllUnchecked()" id="scenes-autoprocess-stop-btn">⏹ Stop</button>
+        <button class="btn btn-sm" style="background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);color:#ff6b6b;padding:9px 16px;display:none;" onclick="deleteSelectedScenes()" id="scenes-bulk-delete-btn">🗑️ Delete Selected (<span id="scenes-selected-count">0</span>)</button>
+        <button class="btn btn-sm" style="padding:9px 16px;" onclick="toggleSelectAllScenes()" id="scenes-select-all-btn">☐ Select All</button>
+        <div id="scenes-recheck-status" style="font-size:12px;color:var(--muted);"></div>
+      </div>
+      <div id="scenes-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;padding:16px;">
+        <div class="empty">Loading...</div>
+      </div>
+      <div style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--border);">
+        <div id="scenes-count-label" style="font-size:12px;color:var(--muted);"></div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-sm" onclick="scenesPrevPage()">← Prev</button>
+          <button class="btn btn-sm" onclick="scenesNextPage()">Next →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Guide Editor — Modern revamp -->
+<div id="completeness-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:700;align-items:center;justify-content:center;">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;width:560px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;">
+    <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <h2 style="margin:0;font-size:17px;">✅ Completeness Check</h2>
+        <div id="completeness-summary" style="font-size:13px;color:var(--muted);margin-top:4px;"></div>
+      </div>
+      <button onclick="document.getElementById('completeness-modal').style.display='none'" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;">✕</button>
+    </div>
+    <div id="completeness-list" style="overflow-y:auto;padding:12px 24px;flex:1;"></div>
+  </div>
+</div>
+
+<div id="photo-checklist-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:700;align-items:center;justify-content:center;">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;width:500px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;">
+    <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <h2 style="margin:0;font-size:17px;">📋 Photo Checklist</h2>
+        <div id="checklist-summary" style="font-size:13px;color:var(--muted);margin-top:4px;"></div>
+      </div>
+      <button onclick="document.getElementById('photo-checklist-modal').style.display='none'" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;">✕</button>
+    </div>
+    <div id="checklist-list" style="overflow-y:auto;padding:12px 24px;flex:1;"></div>
+  </div>
+</div>
+
+<div id="batch-scaffold-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:590;align-items:center;justify-content:center;">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;width:500px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;">
+    <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <h2 style="margin:0;font-size:17px;">🚀 Batch-Scaffold Countries</h2>
+        <div style="font-size:13px;color:var(--muted);margin-top:4px;">Creates a starter scaffold + saves it immediately for each checked country</div>
+      </div>
+      <button onclick="document.getElementById('batch-scaffold-modal').style.display='none'" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;">✕</button>
+    </div>
+    <div id="batch-scaffold-list" style="overflow-y:auto;padding:8px 24px;flex:1;"></div>
+    <div style="padding:16px 24px;border-top:1px solid var(--border);">
+      <div id="batch-scaffold-progress" style="font-size:12px;color:var(--muted);margin-bottom:10px;min-height:16px;"></div>
+      <button onclick="runBatchScaffold()" style="width:100%;background:rgba(124,58,237,0.15);border:1px solid rgba(124,58,237,0.4);color:#c4a0ff;padding:10px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">Generate Selected Scaffolds</button>
+    </div>
+  </div>
+</div>
+
+<div id="progress-tracker-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:590;align-items:center;justify-content:center;">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;width:600px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;">
+    <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <h2 style="margin:0;font-size:17px;">📊 Guide Progress</h2>
+        <div id="progress-summary" style="font-size:13px;color:var(--muted);margin-top:4px;"></div>
+      </div>
+      <button onclick="document.getElementById('progress-tracker-modal').style.display='none'" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;">✕</button>
+    </div>
+    <div id="progress-list" style="overflow-y:auto;padding:12px 24px;flex:1;"></div>
+  </div>
+</div>
+
+<div id="guide-editor" style="display:none;position:fixed;inset:0;background:#07070f;z-index:600;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+
+  <!-- Top bar -->
+  <div class="ge-topbar">
+    <div style="display:flex;align-items:center;gap:14px;">
+      <button onclick="closeGuideEditor()" class="ge-btn-ghost">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+        Back
+      </button>
+      <div style="width:1px;height:20px;background:#1e1e38;"></div>
+      <span id="editor-title" style="font-size:14px;font-weight:700;color:#e0e0f0;">New Guide</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <!-- View toggle -->
+      <div class="ge-toggle">
+        <button id="pane-both-btn" onclick="setPaneMode('both')" class="ge-toggle-btn active">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="2" y="3" width="9" height="18" rx="2"/><rect x="13" y="3" width="9" height="18" rx="2"/></svg>
+          Both
+        </button>
+        <button id="pane-edit-btn" onclick="setPaneMode('edit')" class="ge-toggle-btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          Edit
+        </button>
+        <button id="pane-preview-btn" onclick="setPaneMode('preview')" class="ge-toggle-btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          Preview
+        </button>
+      </div>
+      <button onclick="saveGuide()" class="ge-btn-save">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/></svg>
+        Save Guide
+      </button>
+    </div>
+  </div>
+
+  <!-- Split panes -->
+  <div id="editor-panes" style="display:flex;flex:1;overflow:hidden;">
+
+    <!-- LEFT: Editor -->
+    <div id="editor-left" style="width:50%;min-width:380px;overflow-y:auto;background:#0a0a15;border-right:1px solid #151525;">
+
+      <!-- Country meta strip -->
+      <div class="ge-meta-strip">
+        <div class="ge-meta-field">
+          <label class="ge-label">Country</label>
+          <input id="ge-country" placeholder="e.g. Australia" oninput="updatePreview()" class="ge-input" style="font-size:15px;font-weight:600;">
+        </div>
+        <div class="ge-meta-field" style="max-width:120px;">
+          <label class="ge-label">ISO Code</label>
+          <input id="ge-iso" placeholder="AU" maxlength="2" oninput="updatePreview()" class="ge-input" style="text-transform:uppercase;font-size:15px;font-weight:600;letter-spacing:2px;">
+        </div>
+        <div class="ge-meta-field" style="max-width:170px;align-self:flex-end;">
+          <button onclick="autoScaffoldCountry()" style="width:100%;background:rgba(124,58,237,0.15);border:1px solid rgba(124,58,237,0.4);color:#c4a0ff;padding:8px 10px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">🪄 Auto-Scaffold</button>
+        </div>
+        <div class="ge-meta-field" style="max-width:150px;align-self:flex-end;">
+          <button onclick="showPhotoChecklist()" style="width:100%;background:rgba(0,201,167,0.15);border:1px solid rgba(0,201,167,0.4);color:#00c9a7;padding:8px 10px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">📋 Checklist</button>
+        </div>
+      </div>
+      <div class="ge-meta-strip" style="border-top:none;padding-top:0;">
+        <div class="ge-meta-field" style="max-width:170px;">
+          <button onclick="document.getElementById('bulk-upload-input').click()" style="width:100%;background:rgba(240,165,0,0.15);border:1px solid rgba(240,165,0,0.4);color:#f0a500;padding:8px 10px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">📤 Bulk Upload Photos</button>
+          <input type="file" id="bulk-upload-input" accept="image/*" multiple style="display:none" onchange="handleBulkUpload(this.files)">
+        </div>
+        <div class="ge-meta-field" style="max-width:170px;">
+          <button onclick="checkGuideCompleteness()" style="width:100%;background:rgba(255,107,107,0.15);border:1px solid rgba(255,107,107,0.4);color:#ff6b6b;padding:8px 10px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">✅ Check Completeness</button>
+        </div>
+      </div>
+
+      <!-- Block list -->
+      <div style="padding:0 20px;">
+        <div id="block-list" style="display:flex;flex-direction:column;gap:6px;padding-bottom:8px;"></div>
+      </div>
+
+      <!-- Add block panel -->
+      <div class="ge-add-panel">
+        <div class="ge-add-label">Add a block</div>
+        <div class="ge-add-grid">
+          <button onclick="addBlock('heading')" class="ge-add-btn">
+            <span class="ge-add-icon">H</span>
+            <span class="ge-add-name">Heading</span>
+          </button>
+          <button onclick="addBlock('text')" class="ge-add-btn">
+            <span class="ge-add-icon">¶</span>
+            <span class="ge-add-name">Text</span>
+          </button>
+          <button onclick="addBlock('image')" class="ge-add-btn">
+            <span class="ge-add-icon">🖼</span>
+            <span class="ge-add-name">Image</span>
+          </button>
+          <button onclick="addBlock('img-text')" class="ge-add-btn">
+            <span class="ge-add-icon">🖼¶</span>
+            <span class="ge-add-name">Image + Text</span>
+          </button>
+          <button onclick="addBlock('two-col')" class="ge-add-btn">
+            <span class="ge-add-icon">⬛⬛</span>
+            <span class="ge-add-name">Two Column</span>
+          </button>
+          <button onclick="addBlock('tip')" class="ge-add-btn">
+            <span class="ge-add-icon">💡</span>
+            <span class="ge-add-name">Tip</span>
+          </button>
+          <button onclick="addBlock('warning')" class="ge-add-btn">
+            <span class="ge-add-icon">⚠️</span>
+            <span class="ge-add-name">Confuse With</span>
+          </button>
+          <button onclick="addBlock('links')" class="ge-add-btn">
+            <span class="ge-add-icon">🔗</span>
+            <span class="ge-add-name">Links List</span>
+          </button>
+          <button onclick="addBlock('nav')" class="ge-add-btn">
+            <span class="ge-add-icon">📋</span>
+            <span class="ge-add-name">Nav Buttons</span>
+          </button>
+          <button onclick="addBlock('region-tabs')" class="ge-add-btn">
+            <span class="ge-add-icon">🗺️</span>
+            <span class="ge-add-name">Region Tabs</span>
+          </button>
+          <button onclick="addBlock('divider')" class="ge-add-btn">
+            <span class="ge-add-icon">—</span>
+            <span class="ge-add-name">Divider</span>
+          </button>
+          <button onclick="addBlock('spacer')" class="ge-add-btn">
+            <span class="ge-add-icon">↕</span>
+            <span class="ge-add-name">Spacer</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Live Preview -->
+    <div id="editor-right" style="flex:1;overflow-y:auto;background:#05050e;">
+      <div style="padding:40px 48px;">
+        <div id="guide-preview" style="max-width:680px;margin:0 auto;">
+          <div class="ge-preview-empty">Start typing on the left to see your guide preview here</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+/* ── Guide Editor Layout ─────────────────── */
+.ge-topbar {
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 20px;height:52px;background:#0d0d1c;
+  border-bottom:1px solid #151525;flex-shrink:0;z-index:10;
+}
+.ge-btn-ghost {
+  display:inline-flex;align-items:center;gap:6px;
+  background:transparent;border:1px solid #1e1e38;color:#8888aa;
+  padding:6px 14px;border-radius:8px;cursor:pointer;font-size:12px;
+  font-weight:600;transition:all .15s;
+}
+.ge-btn-ghost:hover { border-color:#7c3aed;color:#a78bfa; }
+.ge-btn-save {
+  display:inline-flex;align-items:center;gap:7px;
+  background:linear-gradient(135deg,#00c9a7,#00a88c);border:none;color:#040d0b;
+  padding:8px 20px;border-radius:9px;cursor:pointer;font-size:13px;
+  font-weight:700;transition:opacity .15s;box-shadow:0 2px 12px rgba(0,201,167,0.3);
+}
+.ge-btn-save:hover { opacity:.88; }
+.ge-toggle {
+  display:flex;gap:2px;background:#0d0d1c;border:1px solid #1e1e38;
+  border-radius:9px;padding:3px;
+}
+.ge-toggle-btn {
+  display:inline-flex;align-items:center;gap:5px;
+  padding:5px 12px;border-radius:7px;border:none;font-size:12px;
+  cursor:pointer;background:transparent;color:#5a5a7a;font-weight:600;
+  transition:all .15s;
+}
+.ge-toggle-btn.active { background:#1e1e38;color:#e0e0f0; }
+.ge-toggle-btn:hover:not(.active) { color:#8888aa; }
+
+/* ── Meta strip ──────────────────────────── */
+.ge-meta-strip {
+  display:flex;gap:12px;padding:16px 20px 12px;
+  border-bottom:1px solid #111120;
+}
+.ge-meta-field { flex:1; }
+.ge-label {
+  display:block;font-size:10px;font-weight:700;color:#444466;
+  text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px;
+}
+.ge-input {
+  width:100%;background:transparent;border:none;border-bottom:1px solid #1e1e38;
+  color:#e0e0f0;padding:4px 0;outline:none;font-family:inherit;
+  transition:border-color .15s;
+}
+.ge-input:focus { border-bottom-color:#00c9a7; }
+.ge-input::placeholder { color:#333355; }
+
+/* ── Add block panel ─────────────────────── */
+.ge-add-panel {
+  margin:16px 20px 24px;background:#0d0d1c;border:1px solid #151525;
+  border-radius:14px;padding:16px;
+}
+.ge-add-label {
+  font-size:10px;font-weight:700;color:#333355;text-transform:uppercase;
+  letter-spacing:.8px;margin-bottom:12px;
+}
+.ge-add-grid {
+  display:grid;grid-template-columns:repeat(3,1fr);gap:6px;
+}
+.ge-add-btn {
+  display:flex;align-items:center;gap:8px;
+  background:#080814;border:1px solid #151525;border-radius:9px;
+  padding:9px 12px;cursor:pointer;transition:all .15s;text-align:left;
+}
+.ge-add-btn:hover { border-color:#7c3aed;background:#0f0f20; }
+.ge-add-icon { font-size:14px;flex-shrink:0;width:20px;text-align:center;font-weight:700;color:#6666aa; }
+.ge-add-name { font-size:12px;font-weight:600;color:#8888aa; }
+.ge-add-btn:hover .ge-add-name { color:#a78bfa; }
+
+.ge-inline-add-wrap { margin-top:8px; position:relative; }
+.ge-inline-add-btn {
+  width:100%;background:none;border:1px dashed #1e1e38;color:#4a4a6a;
+  border-radius:8px;padding:6px 10px;font-size:11px;font-weight:600;
+  cursor:pointer;transition:all .15s;text-align:center;
+}
+.ge-inline-add-btn:hover { border-color:#7c3aed;color:#a78bfa;background:rgba(124,58,237,0.06); }
+.ge-inline-add-menu {
+  position:absolute;z-index:50;top:calc(100% + 4px);left:0;right:0;
+  background:#0d0d1c;border:1px solid #7c3aed;border-radius:12px;
+  padding:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;
+  box-shadow:0 12px 32px rgba(0,0,0,0.5);
+}
+
+/* ── Block cards ─────────────────────────── */
+.block-card {
+  background:#0d0d1c;border:1px solid #151525;border-radius:10px;
+  padding:12px 14px;position:relative;transition:border-color .15s;
+}
+.block-card:hover { border-color:#1e1e38; }
+.block-card.block-focused { border-color:#7c3aed; }
+.block-card.drag-over { border-color:#7c3aed; border-style:dashed; background:#0f0f20; }
+.drag-handle {
+  cursor:grab;color:#333355;font-size:16px;padding:2px 6px;
+  border-radius:5px;transition:color .1s;user-select:none;
+}
+.drag-handle:hover { color:#7c3aed; }
+.drag-handle:active { cursor:grabbing; }
+.group-drag-handle {
+  font-size:11px;font-weight:700;color:#7c3aed;background:rgba(124,58,237,0.1);
+  border:1px solid rgba(124,58,237,0.3);border-radius:6px;padding:3px 8px;
+}
+.group-drag-handle:hover { color:#fff;background:#7c3aed;border-color:#7c3aed; }
+.block-toolbar {
+  display:flex;gap:3px;align-items:center;margin-bottom:10px;
+}
+.block-tag {
+  font-size:10px;font-weight:700;color:#444466;text-transform:uppercase;
+  letter-spacing:.6px;background:#080814;padding:3px 8px;border-radius:5px;
+  border:1px solid #151525;
+}
+.block-move {
+  background:none;border:none;color:#333355;cursor:pointer;
+  font-size:13px;padding:2px 6px;border-radius:5px;transition:all .1s;
+}
+.block-move:hover { color:#8888aa;background:#151525; }
+.block-delete {
+  background:none;border:none;color:#333355;cursor:pointer;
+  font-size:12px;padding:2px 6px;border-radius:5px;margin-left:auto;
+  transition:all .1s;
+}
+.block-delete:hover { color:#ff6b6b;background:rgba(255,107,107,0.08); }
+
+/* ── Block inputs ────────────────────────── */
+.be {
+  width:100%;background:#080814;border:1px solid #111120;border-radius:8px;
+  padding:9px 12px;color:#e0e0f0;font-size:13px;line-height:1.7;
+  outline:none;resize:none;font-family:inherit;min-height:38px;
+  white-space:pre-wrap;word-break:break-word;transition:border-color .15s;
+}
+.be:focus { border-color:#7c3aed;box-shadow:0 0 0 3px rgba(124,58,237,0.08); }
+.be::placeholder { color:#333355; }
+.be-heading {
+  font-size:17px;font-weight:700;min-height:28px;resize:none;
+  background:transparent;border:none;border-bottom:1px solid #151525;
+  border-radius:0;padding:4px 0;letter-spacing:-.2px;
+}
+.be-heading:focus { border-bottom-color:#7c3aed;box-shadow:none; }
+
+/* ── Image drop zone ─────────────────────── */
+.img-drop-zone {
+  border:2px dashed #151525;border-radius:10px;padding:28px;text-align:center;
+  cursor:pointer;transition:all .2s;background:#080814;position:relative;
+}
+.img-drop-zone:hover,.img-drop-zone.drag-over {
+  border-color:#7c3aed;background:rgba(124,58,237,0.05);
+}
+.img-drop-zone img { max-width:100%;border-radius:8px;display:block;margin:0 auto; }
+
+/* ── Preview ─────────────────────────────── */
+.ge-preview-empty {
+  text-align:center;padding:80px 20px;color:#222244;font-size:14px;
+  border:2px dashed #0d0d1c;border-radius:16px;
+}
+.prev-h2 { font-size:20px;font-weight:800;color:#e0e0f0;margin:28px 0 12px;padding-bottom:10px;border-bottom:1px solid #151525; }
+.prev-p { color:#c0c0d8;line-height:1.8;font-size:14px;margin-bottom:14px;white-space:pre-wrap; }
+.prev-img { width:100%;border-radius:10px;margin:14px 0 4px;display:block; }
+.prev-cap { text-align:center;font-size:12px;color:#444466;margin-bottom:14px; }
+.prev-tip { background:rgba(0,201,167,0.07);border-left:3px solid #00c9a7;border-radius:0 10px 10px 0;padding:14px 18px;margin:14px 0; }
+.prev-tip-label { font-size:10px;font-weight:800;color:#00c9a7;margin-bottom:5px;text-transform:uppercase;letter-spacing:.6px; }
+.prev-warn { background:rgba(255,107,107,0.07);border-left:3px solid #ff6b6b;border-radius:0 10px 10px 0;padding:14px 18px;margin:14px 0; }
+.prev-warn-label { font-size:10px;font-weight:800;color:#ff6b6b;margin-bottom:5px;text-transform:uppercase;letter-spacing:.6px; }
+.prev-2col { display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:12px 0; }
+.prev-2col-cell { background:#0d0d1c;border:1px solid #151525;border-radius:10px;padding:14px; }
+
+@keyframes spin { to { transform:rotate(360deg); } }
+</style>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = 'https://geoanalyzerx.onrender.com';
+let adminKey = '';
+let adminToken = '';
+let allUsers = [];
+let inactivityTimer = null; // kept for reference but no longer used
+let pollInterval = null;
+let lastEventTime = null;
+
+// ── Auth helpers ──────────────────────────────────────────
+function adminHeaders(extra) {
+  return Object.assign({'Content-Type':'application/json','X-Admin-Key':adminKey,'X-Admin-Token':adminToken}, extra || {});
+}
+
+// Inactivity logout removed — too disruptive when writing guides
+function resetInactivityTimer() { /* no-op */ }
+
+function doLogout(msg) {
+  adminKey = ''; adminToken = '';
+  sessionStorage.removeItem('gax_admin_key');
+  sessionStorage.removeItem('gax_admin_token');
+  clearTimeout(inactivityTimer);
+  clearInterval(pollInterval);
+  document.getElementById('dashboard').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'flex';
+  if (msg) {
+    document.getElementById('login-error').textContent = msg;
+    document.getElementById('login-error').style.display = 'block';
+  }
+}
+
+// Keep Render awake while the admin panel is open — ping every 10 minutes
+// so the server doesn't cold-start mid-save or mid-image-upload
+setInterval(() => {
+  if (adminToken) fetch(`${API}/health`).catch(() => {});
+}, 10 * 60 * 1000);
+
+// ── Session restore on refresh ────────────────────────────
+window.addEventListener('load', () => {
+  const savedKey   = sessionStorage.getItem('gax_admin_key');
+  const savedToken = sessionStorage.getItem('gax_admin_token');
+  if (savedKey && savedToken) {
+    adminKey = savedKey; adminToken = savedToken;
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    loadDashboard();
+  }
+});
+
+// ── Single dashboard load ─────────────────────────────────
+function loadDashboard() {
+  fetch(`${API}/admin/dashboard`, {headers: adminHeaders()})
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { doLogout('Session expired, please log in again.'); return; }
+      loadStats(d.stats);
+      allUsers = d.users || [];
+      document.getElementById('user-count').textContent = `${allUsers.length} users`;
+      renderUsers(allUsers);
+      allActivityLogs = d.logs || [];
+      allChatLogs = d.chats || [];
+      renderLogs();
+      if (allActivityLogs.length) lastEventTime = allActivityLogs[0].created_at;
+      startClock();
+      startPoll();
+      resetInactivityTimer();
+      loadGuides();
+      loadCameraQuizList();
+      populatePhotoQuizCountrySelect();
+      loadPhotoQuizList();
+      loadScenesList();
+    })
+    .catch(() => doLogout('Could not connect.'));
+}
+
+// ── Fast incremental poll (every 3 seconds, tiny payload) ──
+function startPoll() {
+  clearInterval(pollInterval);
+  pollInterval = setInterval(() => {
+    if (!adminToken) return;
+    const since = lastEventTime ? `&since=${encodeURIComponent(lastEventTime)}` : '';
+    fetch(`${API}/admin/poll?key=${encodeURIComponent(adminKey)}&token=${encodeURIComponent(adminToken)}${since}`)
+      .then(r => r.json())
+      .then(d => {
+        if (!d.events || !d.events.length) return;
+        // Prepend new events and update the last-seen timestamp
+        allActivityLogs.unshift(...d.events.reverse());
+        if (allActivityLogs.length > 500) allActivityLogs.length = 500;
+        lastEventTime = allActivityLogs[0].created_at;
+        renderLogs();
+        // Flash the log count green to show something arrived
+        const el = document.getElementById('log-count');
+        if (el) { el.style.color = '#00c9a7'; setTimeout(() => el.style.color = '#8888aa', 800); }
+      })
+      .catch(() => {});
+  }, 3000);
+}
+
+function refreshAll() {
+  loadDashboard();
+}
+
+// ── Login ─────────────────────────────────────────────────
+function doLogin() {
+  const email    = document.getElementById('admin-email-input').value.trim();
+  const password = document.getElementById('admin-password-input').value;
+  const key      = document.getElementById('admin-key-input').value.trim();
+  const totp_code = document.getElementById('admin-totp-input').value.trim();
+  if (!email || !password || !key) return;
+  document.getElementById('login-error').style.display = 'none';
+  fetch(`${API}/admin/login`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-Admin-Key':key},
+    body: JSON.stringify({email, password, totp_code})
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.error || !d.admin_token) {
+      document.getElementById('login-error').textContent = d.error || 'Invalid credentials';
+      document.getElementById('login-error').style.display = 'block';
+      return;
+    }
+    adminKey = key; adminToken = d.admin_token;
+    sessionStorage.setItem('gax_admin_key', key);
+    sessionStorage.setItem('gax_admin_token', d.admin_token);
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    loadDashboard();
+  })
+  .catch(() => {
+    document.getElementById('login-error').textContent = 'Could not connect to server';
+    document.getElementById('login-error').style.display = 'block';
+  });
+}
+
+function startClock() {
+  function tick() {
+    const now = new Date();
+    document.getElementById('nav-time').textContent = now.toLocaleTimeString();
+    document.getElementById('usage-date').textContent = now.toLocaleDateString('en-GB', {weekday:'long', day:'numeric', month:'long'});
+  }
+  tick();
+  setInterval(tick, 1000);
+  document.getElementById('nav-status').style.color = '#00c9a7';
+}
+
+function loadStats(d) {
+  document.getElementById('s-total').textContent  = d.total_users;
+  document.getElementById('s-pro').textContent    = d.pro_users;
+  document.getElementById('s-free').textContent   = d.free_users;
+  document.getElementById('s-scenes').textContent = d.scenes;
+  document.getElementById('s-new').textContent    = d.new_today;
+
+  const tbody = document.getElementById('usage-tbody');
+  if (!d.usage_today?.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No activity today yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = d.usage_today.map(u => `
+    <tr>
+      <td><strong>${escapeHtml(u.username)}</strong></td>
+      <td><span class="badge badge-${u.tier}">${u.tier}</span></td>
+      <td>
+        <span style="margin-right:8px">${u.f7||0}/10</span>
+        <span class="usage-bar-wrap"><span class="usage-bar" style="width:${Math.min(100,(u.f7||0)*10)}%;background:${(u.f7||0)>=10?'#ff6b6b':'#00c9a7'}"></span></span>
+      </td>
+      <td>
+        <span style="margin-right:8px">${u.guides||0}/10</span>
+        <span class="usage-bar-wrap"><span class="usage-bar" style="width:${Math.min(100,(u.guides||0)*10)}%;background:${(u.guides||0)>=10?'#ff6b6b':'#00c9a7'}"></span></span>
+      </td>
+      <td>${u.analyses||0}</td>
+    </tr>`).join('');
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Lightweight markdown-style formatting: **bold** and *italic*. escapeHtml
+// runs first so any HTML a user types is neutralized, then only our own
+// <strong>/<em> tags get added on top — safe either way.
+function mdToHtml(s) {
+  let h = escapeHtml(s || '');
+  h = h.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/\*([^*]+?)\*/g, '<em>$1</em>');
+  return h;
+}
+
+function wrapSelection(taId, blockId, key, marker) {
+  const ta = document.getElementById(taId);
+  if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const val = ta.value;
+  const selected = val.slice(start, end) || 'text';
+  const newVal = val.slice(0, start) + marker + selected + marker + val.slice(end);
+  ta.value = newVal;
+  syncBlock(blockId, key, newVal);
+  autoResize(ta);
+  const newStart = start + marker.length;
+  ta.focus();
+  ta.setSelectionRange(newStart, newStart + selected.length);
+}
+
+function fmtToolbar(taId, blockId, key) {
+  return `<div style="display:flex;gap:4px;margin-bottom:4px;">
+    <button type="button" onmousedown="event.preventDefault()" onclick="wrapSelection('${taId}',${blockId},'${key}','**')" title="Bold (**text**)" style="width:22px;height:20px;border-radius:4px;border:1px solid var(--border);background:var(--bg2);color:var(--muted);cursor:pointer;font-size:11px;font-weight:800;">B</button>
+    <button type="button" onmousedown="event.preventDefault()" onclick="wrapSelection('${taId}',${blockId},'${key}','*')" title="Italic (*text*)" style="width:22px;height:20px;border-radius:4px;border:1px solid var(--border);background:var(--bg2);color:var(--muted);cursor:pointer;font-size:11px;font-style:italic;">i</button>
+  </div>`;
+}
+
+function attachToggle(block) {
+  const on = !!block.data.attachBelow;
+  return `<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:${on?'#00c9a7':'var(--muted)'};cursor:pointer;margin-bottom:8px;user-select:none;">
+    <input type="checkbox" ${on?'checked':''} onchange="syncBlock(${block.id},'attachBelow',this.checked)" style="accent-color:#00c9a7;cursor:pointer;">
+    🔗 Attach to block below (no gap)
+  </label>`;
+}
+
+function renderUsers(users) {
+  const tbody = document.getElementById('users-tbody');
+  if (!users.length) { tbody.innerHTML = '<tr><td colspan="9" class="empty">No users found</td></tr>'; return; }
+  tbody.innerHTML = users.map(u => {
+    const isBanned = u.banned_until && new Date(u.banned_until) > new Date();
+    const isPermaBanned = isBanned && (new Date(u.banned_until) - new Date()) > 1000*60*60*24*365;
+    const uname = escapeHtml(u.username);
+    const uemail = escapeHtml(u.email);
+    return `
+    <tr>
+      <td><strong>${uname}</strong>${u.disabled ? `<br><span class="badge badge-banned" style="margin-top:4px;">⏸ Disabled</span>` : ''}${isBanned ? `<br><span class="badge badge-banned" style="margin-top:4px;">${isPermaBanned ? '🚫 Permanent' : '🚫 Until ' + formatDate(u.banned_until)}</span>` : ''}</td>
+      <td style="color:#8888aa;font-size:12px">${uemail}</td>
+      <td><span class="badge badge-${u.tier}">${u.tier}</span></td>
+      <td>${u.email_verified
+            ? `<span class="badge badge-free">✓ Verified</span>`
+            : `<span class="badge badge-banned">✗ Unverified</span><br><button class="btn btn-sm" style="margin-top:4px;background:#1a1a2e;border:1px solid #2a2a3e;color:#8888aa;" onclick="resendVerification(${u.id})">✉ Resend</button>`}</td>
+      <td>
+        <div style="font-size:12px;color:#8888aa;margin-bottom:4px;">${u.phone_number ? escapeHtml(u.phone_number) : '<em>none set</em>'}</div>
+        ${u.phone_number
+          ? (u.phone_verified
+              ? `<span class="badge badge-free">✓ Verified</span>`
+              : `<span class="badge badge-banned">✗ Unverified</span>`)
+          : ''}
+        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
+          <button class="btn btn-sm" style="background:#1a1a2e;border:1px solid #2a2a3e;color:#8888aa;" onclick="setPhoneNumber(${u.id})">${u.phone_number ? '✎ Edit' : '+ Add'}</button>
+          ${u.phone_number && !u.phone_verified ? `<button class="btn btn-sm" style="background:#1a1a2e;border:1px solid #2a2a3e;color:#8888aa;" onclick="resendPhoneVerification(${u.id})">📱 Resend</button>` : ''}
+          ${u.phone_number ? `<button class="btn btn-sm" style="background:${u.phone_verified ? '#1a1a2e' : 'rgba(0,201,167,.15)'};border:1px solid ${u.phone_verified ? '#2a2a3e' : 'rgba(0,201,167,.3)'};color:${u.phone_verified ? '#8888aa' : '#00c9a7'};" onclick="setPhoneVerified(${u.id},${!u.phone_verified})">${u.phone_verified ? 'Mark Unverified' : '✓ Mark Verified'}</button>` : ''}
+          ${u.phone_number ? `<button class="btn btn-sm btn-danger" onclick="resetPhone(${u.id})">↺ Reset</button>` : ''}
+        </div>
+      </td>
+      <td>${u.is_admin
+            ? `<span class="badge badge-pro">★ Admin</span><br><button class="btn btn-sm" style="margin-top:4px;background:#1a1a2e;border:1px solid #2a2a3e;color:#8888aa;" onclick="setAdmin(${u.id},false)">Demote</button>`
+            : `<button class="btn btn-sm btn-purple" onclick="setAdmin(${u.id},true)">Make Admin</button>`}</td>
+      <td style="color:#8888aa;font-size:12px">${formatDate(u.created_at)}</td>
+      <td style="color:#8888aa;font-size:12px">${formatDate(u.last_login)}</td>
+      <td>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          ${u.tier === 'free'
+            ? `<button class="btn btn-sm btn-purple" onclick="setTier(${u.id},'pro')">↑ Pro</button>`
+            : `<button class="btn btn-sm btn-danger" onclick="setTier(${u.id},'free')">↓ Free</button>`
+          }
+          <button class="btn btn-sm" style="background:#1a1a2e;border:1px solid #2a2a3e;color:#8888aa;" onclick="resetUsage(${u.id})">Reset</button>
+          <button class="btn btn-sm" style="background:${u.disabled ? 'rgba(0,201,167,.15)' : '#1a1a2e'};border:1px solid ${u.disabled ? 'rgba(0,201,167,.3)' : '#2a2a3e'};color:${u.disabled ? '#00c9a7' : '#8888aa'};" onclick="toggleDisabled(${u.id},${!u.disabled})">${u.disabled ? '▶ Enable' : '⏸ Disable'}</button>
+          <div class="ban-menu">
+            <button class="btn btn-sm" style="background:${isBanned ? 'rgba(255,100,100,.15)' : '#1a1a2e'};border:1px solid ${isBanned ? 'rgba(255,100,100,.3)' : '#2a2a3e'};color:${isBanned ? '#ff6b6b' : '#8888aa'};" onclick="toggleBanMenu(event,${u.id})">${isBanned ? '🚫 Banned' : '🚫 Ban'}</button>
+            <div class="ban-dropdown" id="ban-menu-${u.id}">
+              ${isBanned ? `<button onclick="banUser(${u.id},'unban')">✓ Unban</button>` : `
+              <button onclick="banUser(${u.id},'1d')">1 Day</button>
+              <button onclick="banUser(${u.id},'3d')">3 Days</button>
+              <button onclick="banUser(${u.id},'1w')">1 Week</button>
+              <button onclick="banUser(${u.id},'1m')">1 Month</button>
+              <button onclick="banUser(${u.id},'permanent')">Permanent</button>
+              `}
+            </div>
+          </div>
+          <button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id})">🗑</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function usernameOf(userId) {
+  const u = allUsers.find(u => u.id === userId);
+  return u ? u.username : 'this user';
+}
+
+function toggleDisabled(userId, disabled) {
+  const username = usernameOf(userId);
+  if (!confirm(`${disabled ? 'Disable' : 'Enable'} ${username}'s account?`)) return;
+  fetch(`${API}/admin/toggle_disabled`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId, disabled})
+  }).then(r => r.json()).then(d => {
+    toast(d.success ? `✓ ${username} ${disabled ? 'disabled' : 'enabled'}` : 'Error: ' + (d.error || 'failed'), !d.success);
+    if (d.success) loadUsers();
+  });
+}
+
+function toggleBanMenu(e, userId) {
+  e.stopPropagation();
+  document.querySelectorAll('.ban-dropdown').forEach(d => { if (d.id !== `ban-menu-${userId}`) d.classList.remove('open'); });
+  document.getElementById(`ban-menu-${userId}`).classList.toggle('open');
+}
+document.addEventListener('click', () => document.querySelectorAll('.ban-dropdown').forEach(d => d.classList.remove('open')));
+
+function banUser(userId, duration) {
+  const username = usernameOf(userId);
+  const labels = {'1d':'1 day','3d':'3 days','1w':'1 week','1m':'1 month','permanent':'PERMANENTLY','unban':'unban'};
+  if (!confirm(`${duration === 'unban' ? 'Unban' : 'Ban'} ${username} ${duration === 'unban' ? '' : 'for ' + labels[duration]}?`)) return;
+  fetch(`${API}/admin/ban_user`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId, duration})
+  }).then(r => r.json()).then(d => {
+    toast(d.success ? `✓ ${username} ${duration === 'unban' ? 'unbanned' : 'banned'}` : 'Error: ' + (d.error || 'failed'), !d.success);
+    if (d.success) loadUsers();
+  });
+}
+
+function filterUsers() {
+  const q = document.getElementById('user-search').value.toLowerCase();
+  renderUsers(allUsers.filter(u => u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)));
+}
+
+function setTier(userId, tier) {
+  const username = usernameOf(userId);
+  if (!confirm(`Set ${username} to ${tier}?`)) return;
+  fetch(`${API}/admin/set_tier`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId, tier})
+  }).then(r => r.json()).then(d => {
+    if (d.success || d.ok) {
+      toast(`✓ ${username} is now ${tier}`);
+      const u = allUsers.find(u => u.id === userId);
+      if (u) u.tier = tier;
+      renderUsers(allUsers.filter(u => {
+        const q = document.getElementById('user-search').value.toLowerCase();
+        return !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+      }));
+    } else { toast('Error: ' + (d.error || 'failed'), true); }
+  });
+}
+
+function resendVerification(userId) {
+  const username = usernameOf(userId);
+  if (!confirm(`Resend verification code to ${username}?`)) return;
+  fetch(`${API}/admin/resend_verification`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId})
+  }).then(r => r.json()).then(d => {
+    toast(d.success ? `✓ Verification code resent to ${username}` : 'Error: ' + (d.error || 'failed'), !d.success);
+  });
+}
+
+function resendPhoneVerification(userId) {
+  const username = usernameOf(userId);
+  if (!confirm(`Resend SMS verification code to ${username}?`)) return;
+  fetch(`${API}/admin/resend_phone_verification`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId})
+  }).then(r => r.json()).then(d => {
+    toast(d.success ? `✓ SMS code resent to ${username}` : 'Error: ' + (d.error || 'failed'), !d.success);
+  });
+}
+
+function setPhoneVerified(userId, verified) {
+  const username = usernameOf(userId);
+  if (!confirm(`Mark ${username}'s phone as ${verified ? 'verified' : 'unverified'}?`)) return;
+  fetch(`${API}/admin/set_phone_verified`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId, verified})
+  }).then(r => r.json()).then(d => {
+    if (d.success) {
+      toast(`✓ ${username}'s phone marked ${verified ? 'verified' : 'unverified'}`);
+      const u = allUsers.find(u => u.id === userId);
+      if (u) u.phone_verified = verified;
+      renderUsers(allUsers.filter(u => {
+        const q = document.getElementById('user-search').value.toLowerCase();
+        return !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+      }));
+    } else { toast('Error: ' + (d.error || 'failed'), true); }
+  });
+}
+
+function resetPhone(userId) {
+  const username = usernameOf(userId);
+  if (!confirm(`Reset ${username}'s phone? This removes their number entirely and resets verification — they'll need to add and verify a new one next time they log in.`)) return;
+  fetch(`${API}/admin/reset_phone`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId})
+  }).then(r => r.json()).then(d => {
+    if (d.success) {
+      toast(`✓ ${username}'s phone reset`);
+      const u = allUsers.find(u => u.id === userId);
+      if (u) { u.phone_number = null; u.phone_verified = false; }
+      renderUsers(allUsers.filter(u => {
+        const q = document.getElementById('user-search').value.toLowerCase();
+        return !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+      }));
+    } else { toast('Error: ' + (d.error || 'failed'), true); }
+  });
+}
+
+function setPhoneNumber(userId) {
+  const username = usernameOf(userId);
+  const u = allUsers.find(u => u.id === userId);
+  const current = (u && u.phone_number) || '';
+  const phone = prompt(`Phone number for ${username} (international format, e.g. +61412345678):`, current);
+  if (phone === null) return; // cancelled
+  const trimmed = phone.trim();
+  if (!trimmed) return;
+  const markVerified = confirm(`Mark this number as already verified? (OK = yes, Cancel = no — they'll need to verify via SMS)`);
+  fetch(`${API}/admin/set_phone_number`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId, phone_number: trimmed, verified: markVerified})
+  }).then(r => r.json()).then(d => {
+    if (d.success) {
+      toast(`✓ Phone number set for ${username}`);
+      if (u) { u.phone_number = d.phone_number; u.phone_verified = d.phone_verified; }
+      renderUsers(allUsers.filter(u => {
+        const q = document.getElementById('user-search').value.toLowerCase();
+        return !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+      }));
+    } else { toast('Error: ' + (d.error || 'failed'), true); }
+  });
+}
+
+function setAdmin(userId, isAdmin) {
+  const username = usernameOf(userId);
+  if (!confirm(`${isAdmin ? 'Promote' : 'Demote'} ${username} ${isAdmin ? 'to' : 'from'} admin?`)) return;
+  fetch(`${API}/admin/set_admin`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId, is_admin: isAdmin})
+  }).then(r => r.json()).then(d => {
+    if (d.success) {
+      toast(`✓ ${username} is ${isAdmin ? 'now an admin' : 'no longer an admin'}`);
+      const u = allUsers.find(u => u.id === userId);
+      if (u) u.is_admin = isAdmin;
+      renderUsers(allUsers.filter(u => {
+        const q = document.getElementById('user-search').value.toLowerCase();
+        return !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+      }));
+    } else { toast('Error: ' + (d.error || 'failed'), true); }
+  });
+}
+
+function deleteUser(userId) {
+  const username = usernameOf(userId);
+  if (!confirm(`Permanently delete ${username}? This cannot be undone.`)) return;
+  if (!confirm(`Are you absolutely sure? This will erase their account, sessions, and usage history.`)) return;
+  fetch(`${API}/admin/delete_user`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId})
+  }).then(r => r.json()).then(d => {
+    toast(d.success ? `✓ Deleted ${username}` : 'Error: ' + (d.error || 'failed'), !d.success);
+    if (d.success) { allUsers = allUsers.filter(u => u.id !== userId); refreshAll(); }
+  });
+}
+
+function resetUsage(userId) {
+  const username = usernameOf(userId);
+  if (!confirm(`Reset today's usage for ${username}?`)) return;
+  fetch(`${API}/admin/reset_usage`, {
+    method: 'POST',
+    headers: adminHeaders(),
+    body: JSON.stringify({user_id: userId})
+  }).then(r => r.json()).then(d => {
+    toast(d.success ? `✓ Reset ${username}'s daily usage` : 'Error: ' + (d.error || 'failed'), !d.success);
+    refreshAll();
+  });
+}
+
+// ── Logs ─────────────────────────────────────────────────
+const EVENT_LABELS = {
+  register:          { icon: '👤', label: 'Register',         color: '#00c9a7' },
+  email_verified:    { icon: '✉️',  label: 'Email Verified',   color: '#00c9a7' },
+  login:             { icon: '🔓', label: 'Login',            color: '#8888aa' },
+  login_failed:      { icon: '❌', label: 'Login Failed',     color: '#ff6b6b' },
+  logout:            { icon: '🔒', label: 'Logout',           color: '#5a5a7a' },
+  password_changed:  { icon: '🔑', label: 'Password Changed', color: '#f59e0b' },
+  rate_limit_login:  { icon: '🚨', label: 'Rate Limited',     color: '#ff6b6b' },
+  ai_analyse:        { icon: '🔍', label: 'Analyse',          color: '#7c3aed' },
+  teaching_guide:    { icon: '📖', label: 'Training Guide',   color: '#7c3aed' },
+  ai_chat:           { icon: '💬', label: 'AI Chat',          color: '#7c3aed' },
+  scene_upload:      { icon: '📸', label: 'F7 Upload',        color: '#00c9a7' },
+  admin_disable:     { icon: '🚫', label: 'User Disabled',    color: '#ff6b6b' },
+  admin_enable:      { icon: '✅', label: 'User Enabled',     color: '#00c9a7' },
+  admin_ban:         { icon: '🔨', label: 'User Banned',      color: '#ff6b6b' },
+  admin_unban:       { icon: '🕊️', label: 'User Unbanned',   color: '#00c9a7' },
+  admin_delete_user: { icon: '🗑️', label: 'User Deleted',    color: '#ff6b6b' },
+  admin_reset_usage: { icon: '↺',  label: 'Usage Reset',      color: '#f59e0b' },
+  admin_set_tier:    { icon: '⭐', label: 'Tier Changed',     color: '#f59e0b' },
+};
+
+const TAB_FILTERS = {
+  all:      null,
+  auth:     ['register','email_verified','login','login_failed','logout','password_changed'],
+  security: ['login_failed','rate_limit_login','admin_ban','admin_disable','admin_delete_user'],
+  ai:       ['ai_analyse','teaching_guide'],
+  scenes:   ['scene_upload'],
+  admin:    ['admin_disable','admin_enable','admin_ban','admin_unban','admin_delete_user','admin_reset_usage','admin_set_tier'],
+};
+
+let allActivityLogs = [];
+let allChatLogs = [];
+let currentLogTab = 'all';
+
+function switchLogTab(tab, btn) {
+  currentLogTab = tab;
+  document.querySelectorAll('.tab-bar .tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('log-activity-panel').style.display = tab === 'chat' ? 'none' : 'block';
+  document.getElementById('log-chat-panel').style.display    = tab === 'chat' ? 'block' : 'none';
+  if (tab === 'chat') renderChatLogs(); else renderLogs();
+}
+
+function filterLogs() {
+  if (currentLogTab === 'chat') renderChatLogs(); else renderLogs();
+}
+
+function renderLogs() {
+  const q = document.getElementById('log-search').value.toLowerCase();
+  const filter = TAB_FILTERS[currentLogTab];
+  let logs = allActivityLogs;
+  if (filter) logs = logs.filter(l => filter.includes(l.event_type));
+  if (q) logs = logs.filter(l =>
+    (l.event_type || '').includes(q) ||
+    (l.username || '').toLowerCase().includes(q) ||
+    (l.detail || '').toLowerCase().includes(q) ||
+    (l.ip || '').includes(q)
+  );
+  document.getElementById('log-count').textContent = `${logs.length} events`;
+  const tbody = document.getElementById('log-activity-tbody');
+  if (!logs.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty">No events yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = logs.map(l => {
+    const meta = EVENT_LABELS[l.event_type] || { icon: '•', label: l.event_type, color: '#8888aa' };
+    return `<tr>
+      <td style="color:#8888aa;font-size:11px;white-space:nowrap">${formatDateTime(l.created_at)}</td>
+      <td><span style="color:${meta.color};font-weight:700;white-space:nowrap">${meta.icon} ${meta.label}</span></td>
+      <td style="font-weight:600">${escapeHtml(l.username || '—')}</td>
+      <td style="font-size:12px;color:#c0c0d8;max-width:300px;word-break:break-word">${escapeHtml(l.detail || '—')}</td>
+      <td style="font-size:11px;color:#5a5a7a;white-space:nowrap">${escapeHtml(l.ip || '—')}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderChatLogs() {
+  const q = document.getElementById('log-search').value.toLowerCase();
+  let logs = allChatLogs;
+  if (q) logs = logs.filter(l =>
+    (l.username || '').toLowerCase().includes(q) ||
+    (l.correct_location || '').toLowerCase().includes(q) ||
+    (l.guessed_location || '').toLowerCase().includes(q) ||
+    (l.user_message || '').toLowerCase().includes(q)
+  );
+  document.getElementById('log-count').textContent = `${logs.length} messages`;
+  const tbody = document.getElementById('log-chat-tbody');
+  if (!logs.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">No chat logs yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = logs.map(l => `<tr>
+    <td style="color:#8888aa;font-size:11px;white-space:nowrap">${formatDateTime(l.created_at)}</td>
+    <td style="font-weight:600">${escapeHtml(l.username || '—')}</td>
+    <td style="font-size:12px;color:#00c9a7">${escapeHtml(l.correct_location || '—')}</td>
+    <td style="font-size:12px;color:#ff6b6b">${escapeHtml(l.guessed_location || '—')}</td>
+    <td style="font-size:12px;max-width:220px;word-break:break-word">${escapeHtml(l.user_message || '')}</td>
+    <td style="font-size:12px;max-width:280px;word-break:break-word;color:#c0c0d8">${escapeHtml(l.ai_reply || '')}</td>
+  </tr>`).join('');
+}
+
+// Keep old names working so existing calls don't break
+function loadChatLogs() { loadAllLogs(); }
+function filterChatLogs() { filterLogs(); }
+
+// ── Country Guides ────────────────────────────────────────
+let allGuides = [];
+let editorBlocks = [];
+let blockIdCounter = 0;
+let dragSrcId = null;
+
+function loadGuides() {
+  fetch(`${API}/admin/country_metas`, {headers: adminHeaders()})
+    .then(r => r.json())
+    .then(d => {
+      allGuides = d.guides || [];
+      const tbody = document.getElementById('guides-tbody');
+      if (!allGuides.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No guides yet — write the first one!</td></tr>';
+        return;
+      }
+      tbody.innerHTML = allGuides.map(g => `
+        <tr>
+          <td style="font-weight:600">${escapeHtml(g.country)}</td>
+          <td style="color:var(--muted);font-size:12px">${g.iso}</td>
+          <td><span style="color:${g.source==='manual'?'#00c9a7':'#7c3aed'};font-size:12px;font-weight:600">${g.source==='manual'?'✍️ Manual':'🤖 AI'}</span></td>
+          <td style="color:var(--muted);font-size:12px">${formatDate(g.updated_at)}</td>
+          <td style="display:flex;gap:6px;">
+            <button onclick="editGuide('${g.iso}','${escapeHtml(g.country)}')" style="background:rgba(0,201,167,0.1);border:1px solid rgba(0,201,167,0.3);color:#00c9a7;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;">Edit</button>
+            <button onclick="deleteGuide('${g.iso}','${escapeHtml(g.country)}')" style="background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);color:#ff6b6b;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;">Delete</button>
+          </td>
+        </tr>`).join('');
+    });
+}
+
+// ── Camera Generation Quiz management ─────────────────────
+function loadCameraQuizList(){
+  fetch(`${API}/admin/camera_quiz/list`, {headers: adminHeaders()})
+    .then(r => r.json())
+    .then(d => {
+      const images = d.images || [];
+      const tbody = document.getElementById('camera-quiz-tbody');
+      if (!images.length){
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">No quiz images yet — upload the first one above.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = images.map(img => `
+        <tr>
+          <td><img src="${img.image_url}" style="width:70px;height:50px;object-fit:cover;border-radius:6px;"></td>
+          <td style="font-weight:600">${escapeHtml(img.correct_gen)}</td>
+          <td style="color:var(--muted);font-size:12px">${formatDate(img.created_at)}</td>
+          <td>
+            <button onclick="deleteCameraQuizImage('${img.id}')" style="background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);color:#ff6b6b;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;">Delete</button>
+          </td>
+        </tr>`).join('');
+    });
+}
+
+function uploadCameraQuizImage(file){
+  if (!file) return;
+  const correctGen = document.getElementById('camera-quiz-gen-select').value;
+  const statusEl = document.getElementById('camera-quiz-upload-status');
+  statusEl.textContent = 'Uploading...';
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    try {
+      const res = await fetch(`${API}/admin/camera_quiz/upload`, {
+        method: 'POST', headers: adminHeaders(),
+        body: JSON.stringify({ image: e.target.result, correct_gen: correctGen })
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      statusEl.textContent = `✓ Uploaded as ${correctGen}`;
+      document.getElementById('camera-quiz-file-input').value = '';
+      loadCameraQuizList();
+    } catch(err) {
+      statusEl.textContent = 'Upload failed: ' + err.message;
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+async function deleteCameraQuizImage(id){
+  if (!confirm('Delete this quiz image?')) return;
+  try {
+    const res = await fetch(`${API}/admin/camera_quiz/delete/${id}`, { method:'DELETE', headers: adminHeaders() });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    loadCameraQuizList();
+  } catch(e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
+// ── Country-guess training games (Bollard/Sign/Vegetation/Plate) ─
+function populatePhotoQuizCountrySelect(){
+  const sel = document.getElementById('photo-quiz-country-select');
+  sel.innerHTML = GEOGUESSR_COUNTRIES.slice().sort((a,b)=>a.localeCompare(b))
+    .map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+}
+
+function loadPhotoQuizList(){
+  const quizType = document.getElementById('photo-quiz-type-select').value;
+  fetch(`${API}/admin/photo_quiz/list?type=${quizType}`, {headers: adminHeaders()})
+    .then(r => r.json())
+    .then(d => {
+      const images = d.images || [];
+      const tbody = document.getElementById('photo-quiz-tbody');
+      if (!images.length){
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">No images yet for this game — upload the first one above.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = images.map(img => `
+        <tr>
+          <td><img src="${img.image_url}" style="width:70px;height:50px;object-fit:cover;border-radius:6px;"></td>
+          <td style="font-weight:600">${escapeHtml(img.correct_country)}</td>
+          <td style="color:var(--muted);font-size:12px">${formatDate(img.created_at)}</td>
+          <td>
+            <button onclick="deletePhotoQuizImage('${img.id}')" style="background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);color:#ff6b6b;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;">Delete</button>
+          </td>
+        </tr>`).join('');
+    });
+}
+
+function uploadPhotoQuizImage(file){
+  if (!file) return;
+  const quizType = document.getElementById('photo-quiz-type-select').value;
+  const correctCountry = document.getElementById('photo-quiz-country-select').value;
+  const statusEl = document.getElementById('photo-quiz-upload-status');
+  statusEl.textContent = 'Uploading...';
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    try {
+      const res = await fetch(`${API}/admin/photo_quiz/upload`, {
+        method: 'POST', headers: adminHeaders(),
+        body: JSON.stringify({ image: e.target.result, quiz_type: quizType, correct_country: correctCountry })
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      statusEl.textContent = `✓ Uploaded as ${correctCountry}`;
+      document.getElementById('photo-quiz-file-input').value = '';
+      loadPhotoQuizList();
+    } catch(err) {
+      statusEl.textContent = 'Upload failed: ' + err.message;
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+async function deletePhotoQuizImage(id){
+  if (!confirm('Delete this quiz image?')) return;
+  try {
+    const res = await fetch(`${API}/admin/photo_quiz/delete/${id}`, { method:'DELETE', headers: adminHeaders() });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    loadPhotoQuizList();
+  } catch(e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
+// ── Scene Library ──────────────────────────────────────────
+let scenesOffset = 0;
+const SCENES_PAGE_SIZE = 60;
+let scenesTotal = 0;
+let selectedSceneIds = new Set();
+
+function loadScenesList(){
+  const grid = document.getElementById('scenes-grid');
+  grid.innerHTML = '<div class="empty">Loading...</div>';
+  selectedSceneIds.clear();
+  updateScenesSelectionUI();
+
+  const params = new URLSearchParams({
+    limit: SCENES_PAGE_SIZE,
+    offset: scenesOffset,
+    quality: document.getElementById('scenes-quality-filter').value,
+    sort: document.getElementById('scenes-sort').value,
+  });
+  const dateFrom = document.getElementById('scenes-date-from').value;
+  const dateTo = document.getElementById('scenes-date-to').value;
+  if (dateFrom) params.set('date_from', dateFrom);
+  if (dateTo) params.set('date_to', dateTo + 'T23:59:59');
+
+  fetch(`${API}/admin/scenes/list?${params}`, { headers: adminHeaders() })
+    .then(r => r.json())
+    .then(d => {
+      const scenes = d.scenes || [];
+      scenesTotal = d.total || 0;
+      if (!scenes.length){
+        grid.innerHTML = '<div class="empty">No scenes match these filters.</div>';
+      } else {
+        grid.innerHTML = scenes.map(s => {
+          const badge = s.quality_checked_at === null
+            ? `<span style="color:var(--muted);background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:10px;">⚪ Not checked</span>`
+            : s.quality_score === 1
+              ? `<span style="color:#00c9a7;background:rgba(0,201,167,0.1);border:1px solid rgba(0,201,167,0.3);border-radius:6px;padding:2px 8px;font-size:10px;">✅ Passed</span>`
+              : `<span style="color:#ff6b6b;background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);border-radius:6px;padding:2px 8px;font-size:10px;" title="${escapeHtml(s.quality_reason||'')}">❌ Failed</span>`;
+          return `
+          <div class="scene-card" data-scene-id="${s.id}" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden;position:relative;">
+            <label style="position:absolute;top:6px;left:6px;z-index:2;background:rgba(0,0,0,0.55);border-radius:5px;padding:3px 5px;display:flex;cursor:pointer;">
+              <input type="checkbox" onchange="toggleSceneSelected('${s.id}',this.checked)" style="cursor:pointer;">
+            </label>
+            <img src="${s.image_url}" loading="lazy" style="width:100%;height:120px;object-fit:cover;display:block;background:#000;">
+            <div style="padding:8px 10px;">
+              <div style="font-size:12px;font-weight:600;">${escapeHtml(s.country)}</div>
+              <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">${escapeHtml(s.state||'')} ${s.region ? '· '+escapeHtml(s.region) : ''}</div>
+              <div style="margin-bottom:6px;">${badge}</div>
+              <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">👤 ${escapeHtml(s.contributor_username)}</div>
+              <div style="font-size:10px;color:var(--muted);margin-bottom:8px;">${formatDate(s.uploaded_at)} · used ${s.times_used}×</div>
+              <button onclick="deleteScene('${s.id}')" style="width:100%;background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);color:#ff6b6b;padding:5px 0;border-radius:6px;cursor:pointer;font-size:11px;">Delete</button>
+            </div>
+          </div>`;
+        }).join('');
+      }
+      const shown = scenes.length ? `${scenesOffset+1}–${scenesOffset+scenes.length}` : '0';
+      document.getElementById('scenes-count-label').textContent = `Showing ${shown} of ${scenesTotal}`;
+    })
+    .catch(() => { grid.innerHTML = '<div class="empty">Failed to load.</div>'; });
+}
+
+function scenesPrevPage(){
+  scenesOffset = Math.max(0, scenesOffset - SCENES_PAGE_SIZE);
+  loadScenesList();
+}
+function scenesNextPage(){
+  if (scenesOffset + SCENES_PAGE_SIZE >= scenesTotal) return;
+  scenesOffset += SCENES_PAGE_SIZE;
+  loadScenesList();
+}
+
+function toggleSceneSelected(id, checked){
+  if (checked) selectedSceneIds.add(id);
+  else selectedSceneIds.delete(id);
+  updateScenesSelectionUI();
+}
+
+function updateScenesSelectionUI(){
+  const count = selectedSceneIds.size;
+  document.getElementById('scenes-selected-count').textContent = count;
+  document.getElementById('scenes-bulk-delete-btn').style.display = count ? '' : 'none';
+  const cardCount = document.querySelectorAll('#scenes-grid .scene-card').length;
+  document.getElementById('scenes-select-all-btn').textContent =
+    (count && count === cardCount) ? '☑ Deselect All' : '☐ Select All';
+}
+
+function toggleSelectAllScenes(){
+  const cards = document.querySelectorAll('#scenes-grid .scene-card');
+  const allSelected = selectedSceneIds.size === cards.length && cards.length > 0;
+  cards.forEach(card => {
+    const id = card.dataset.sceneId;
+    const cb = card.querySelector('input[type="checkbox"]');
+    if (allSelected) {
+      selectedSceneIds.delete(id);
+      if (cb) cb.checked = false;
+    } else {
+      selectedSceneIds.add(id);
+      if (cb) cb.checked = true;
+    }
+  });
+  updateScenesSelectionUI();
+}
+
+// Removes a card straight from the DOM instead of re-fetching and
+// re-rendering the whole grid — much snappier when deleting several
+// images in a row, and avoids the visible "flash" of a full reload.
+function removeSceneCardFromDom(id){
+  document.querySelector(`#scenes-grid .scene-card[data-scene-id="${id}"]`)?.remove();
+  selectedSceneIds.delete(id);
+  scenesTotal = Math.max(0, scenesTotal - 1);
+  const remaining = document.querySelectorAll('#scenes-grid .scene-card').length;
+  if (!remaining) {
+    document.getElementById('scenes-grid').innerHTML = '<div class="empty">No scenes match these filters.</div>';
+  }
+  const shown = remaining ? `${scenesOffset+1}–${scenesOffset+remaining}` : '0';
+  document.getElementById('scenes-count-label').textContent = `Showing ${shown} of ${scenesTotal}`;
+  updateScenesSelectionUI();
+}
+
+async function recheckSceneQuality(){
+  const btn = document.getElementById('scenes-recheck-btn');
+  const status = document.getElementById('scenes-recheck-status');
+  btn.disabled = true;
+  status.textContent = 'Checking next 10 unchecked scenes — this can take a little while...';
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const res = await fetch(`${API}/admin/scenes/recheck_quality`, {
+      method: 'POST', headers: adminHeaders(), signal: controller.signal,
+      body: JSON.stringify({ unchecked_only: true, limit: 10 })
+    });
+    clearTimeout(timeoutId);
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    status.textContent = d.checked
+      ? `✓ Checked ${d.checked} — ${d.passed} passed, ${d.failed} failed.`
+      : 'No unchecked scenes found — the whole library is up to date.';
+    loadScenesList();
+  } catch(e) {
+    status.textContent = 'Re-check failed: ' + (e.name === 'AbortError' ? 'timed out after 60s — try again, or it may need a smaller batch.' : e.message);
+  }
+  btn.disabled = false;
+}
+
+// Chains the same batch-of-20 endpoint together automatically, so
+// working through a large backlog (e.g. 2000+ photos) is one click
+// instead of ~100 manual ones. Runs in the background with a short
+// pause between batches, shows a running total, and can be cancelled.
+let scenesAutoProcessing = false;
+async function autoProcessAllUnchecked(){
+  if (scenesAutoProcessing) return;
+  scenesAutoProcessing = true;
+  document.getElementById('scenes-recheck-btn').disabled = true;
+  document.getElementById('scenes-autoprocess-btn').disabled = true;
+  document.getElementById('scenes-autoprocess-stop-btn').style.display = '';
+  const status = document.getElementById('scenes-recheck-status');
+
+  let totalChecked = 0, totalPassed = 0, totalFailed = 0;
+  try {
+    while (scenesAutoProcessing) {
+      status.textContent = `Processing... ${totalChecked} checked so far (${totalPassed} passed, ${totalFailed} failed). Working on the next batch...`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+      let res;
+      try {
+        res = await fetch(`${API}/admin/scenes/recheck_quality`, {
+          method: 'POST', headers: adminHeaders(), signal: controller.signal,
+          body: JSON.stringify({ unchecked_only: true, limit: 5 })
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      if (!d.checked) break; // backlog exhausted
+      totalChecked += d.checked;
+      totalPassed += d.passed;
+      totalFailed += d.failed;
+      loadScenesList();
+      // Brief pause between batches so this doesn't hammer the API
+      // back-to-back with zero breathing room.
+      await new Promise(r => setTimeout(r, 800));
+    }
+    status.textContent = scenesAutoProcessing
+      ? `✓ Done — checked ${totalChecked} total (${totalPassed} passed, ${totalFailed} failed). The whole library is now up to date.`
+      : `⏹ Stopped — checked ${totalChecked} so far (${totalPassed} passed, ${totalFailed} failed). Click again to resume.`;
+  } catch(e) {
+    status.textContent = `Stopped due to an error after checking ${totalChecked}: ${e.message}`;
+  }
+  scenesAutoProcessing = false;
+  document.getElementById('scenes-recheck-btn').disabled = false;
+  document.getElementById('scenes-autoprocess-btn').disabled = false;
+  document.getElementById('scenes-autoprocess-stop-btn').style.display = 'none';
+}
+function stopAutoProcessAllUnchecked(){
+  scenesAutoProcessing = false;
+}
+
+async function deleteScene(id){
+  if (!confirm('Delete this scene? This removes it from storage permanently.')) return;
+  try {
+    const res = await fetch(`${API}/admin/scenes/delete/${id}`, { method:'DELETE', headers: adminHeaders() });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    removeSceneCardFromDom(id);
+  } catch(e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
+async function deleteSelectedScenes(){
+  const ids = Array.from(selectedSceneIds);
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} selected scene${ids.length===1?'':'s'}? This removes them from storage permanently.`)) return;
+  const btn = document.getElementById('scenes-bulk-delete-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${API}/admin/scenes/delete_bulk`, {
+      method: 'POST', headers: adminHeaders(),
+      body: JSON.stringify({ scene_ids: ids })
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    ids.forEach(id => removeSceneCardFromDom(id));
+    toast(`Deleted ${d.deleted ?? ids.length} scene(s).`);
+  } catch(e) {
+    toast('Bulk delete failed: ' + e.message, true);
+  }
+  btn.disabled = false;
+}
+
+// ── Pane mode ─────────────────────────────────────────────
+function setPaneMode(mode) {
+  const left = document.getElementById('editor-left');
+  const right = document.getElementById('editor-right');
+  document.querySelectorAll('.ge-toggle-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('pane-' + mode + '-btn')?.classList.add('active');
+  if (mode === 'both') { left.style.display = ''; right.style.display = ''; left.style.width = '50%'; }
+  else if (mode === 'edit') { left.style.display = ''; left.style.width = '100%'; right.style.display = 'none'; }
+  else { left.style.display = 'none'; right.style.display = ''; }
+}
+
+// ── Editor open/close ─────────────────────────────────────
+function openGuideEditor(iso, country) {
+  editorBlocks = [];
+  blockIdCounter = 0;
+  document.getElementById('ge-country').value = country || '';
+  document.getElementById('ge-iso').value = iso || '';
+  document.getElementById('editor-title').textContent = country ? `Editing: ${country}` : 'New Guide';
+  document.getElementById('block-list').innerHTML = '';
+  document.getElementById('guide-preview').innerHTML = '<div style="color:var(--muted);text-align:center;padding:60px 0;font-size:14px;">Preview will appear here as you type</div>';
+  const el = document.getElementById('guide-editor');
+  el.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  setPaneMode('both');
+  // Pause inactivity logout while the editor is open — typing in the editor
+  // doesn't trigger the global mouse/keyboard listeners so the timer would
+  // fire even when the user is actively writing a guide.
+  clearTimeout(inactivityTimer);
+  // Ping the server so it's awake before the user tries to upload images
+  fetch(`${API}/health`).catch(() => {});
+}
+
+function closeGuideEditor() {
+  document.getElementById('guide-editor').style.display = 'none';
+  document.body.style.overflow = '';
+  // Resume the inactivity timer when back on the admin dashboard
+  resetInactivityTimer();
+}
+
+async function deleteGuide(iso, country) {
+  if (!confirm(`Delete the ${country} guide? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`${API}/admin/country_meta/${iso}`, {
+      method: 'DELETE', headers: adminHeaders()
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    toast(`${country} guide deleted`);
+    loadGuides();
+  } catch(e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
+// Same ~114-country coverage list used by region-map.html, so "started
+// vs not started" always reflects the real set of countries that matter.
+const GEOGUESSR_COUNTRIES = [
+  "Albania","Andorra","Argentina","Australia","Austria","Bangladesh","Belgium",
+  "Bhutan","Bolivia","Botswana","Brazil","Bulgaria","Cambodia","Canada","Chile",
+  "Colombia","Costa Rica","Croatia","Cyprus","Czechia","Denmark",
+  "Dominican Republic","Ecuador","Estonia","Eswatini","Finland","France",
+  "Georgia","Germany","Ghana","Greece","Greenland","Guatemala","Hungary",
+  "Iceland","India","Indonesia","Ireland","Israel","Italy","Japan","Jordan",
+  "Kazakhstan","Kenya","Kyrgyzstan","Laos","Latvia","Lebanon","Lesotho",
+  "Liechtenstein","Lithuania","Luxembourg","Madagascar","Malaysia","Malta",
+  "Mexico","Monaco","Mongolia","Montenegro","Namibia","Nepal","Netherlands",
+  "New Zealand","Nigeria","North Macedonia","Norway","Oman","Pakistan",
+  "Palestine","Panama","Peru","Philippines","Poland","Portugal","Qatar",
+  "Romania","Russia","Rwanda","San Marino","Sao Tome and Principe","Senegal",
+  "Serbia","Singapore","Slovakia","Slovenia","South Africa","South Korea",
+  "Spain","Sri Lanka","Sweden","Switzerland","Taiwan","Thailand","Tunisia",
+  "Turkey","Uganda","Ukraine","United Arab Emirates","United Kingdom",
+  "United States of America","Uruguay","Vietnam",
+  "Bermuda","Curaçao","Faroe Islands","Guam","Isle of Man","Jersey",
+  "Northern Mariana Islands","American Samoa","Puerto Rico",
+  "United States Virgin Islands","Christmas Island","Réunion"
+];
+
+function checkGuideCompleteness(){
+  const issues = [];
+  const placeholderPatterns = [/\[.*?\/.*?\]/, /\[describe/i, /tell goes here/i, /no description yet/i];
+
+  editorBlocks.forEach((b, i) => {
+    if ((b.type === 'img-text' || b.type === 'image') && !b.data.src){
+      issues.push({ type: 'Missing photo', detail: (b.data.text || '(no text)').slice(0, 60), blockId: b.id });
+    }
+    if (b.data.text && placeholderPatterns.some(p => p.test(b.data.text))){
+      issues.push({ type: 'Unfilled placeholder', detail: b.data.text.slice(0, 60), blockId: b.id });
+    }
+    if (b.type === 'links'){
+      (b.data.items || []).forEach(item => {
+        if (item.label && !item.url){
+          issues.push({ type: 'Empty link URL', detail: item.label, blockId: b.id });
+        }
+      });
+    }
+    if (b.type === 'heading'){
+      const next = editorBlocks[i+1];
+      if (!next || next.type === 'heading'){
+        issues.push({ type: 'Empty section', detail: `"${b.data.text}" has nothing under it`, blockId: b.id });
+      }
+    }
+  });
+
+  document.getElementById('completeness-summary').textContent = issues.length
+    ? `${issues.length} thing(s) still need attention`
+    : '🎉 Nothing outstanding — looks ready!';
+  document.getElementById('completeness-list').innerHTML = issues.length
+    ? issues.map(iss => `<div onclick="document.getElementById('completeness-modal').style.display='none';document.querySelector('[data-block-id=\\'${iss.blockId}\\']')?.scrollIntoView({behavior:'smooth',block:'center'})"
+        style="display:flex;gap:10px;align-items:flex-start;padding:9px 4px;border-bottom:1px solid var(--border);cursor:pointer;">
+        <span style="font-size:11px;font-weight:700;color:#ff6b6b;text-transform:uppercase;letter-spacing:.4px;flex-shrink:0;width:130px;">${iss.type}</span>
+        <span style="font-size:13px;color:var(--muted);">${escapeHtml(iss.detail)}</span>
+      </div>`).join('')
+    : '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center;">✅ Every block has a photo, no leftover placeholders, no empty links, no empty sections.</div>';
+  document.getElementById('completeness-modal').style.display = 'flex';
+}
+
+function showPhotoChecklist(){
+  // Live-derived from the actual blocks in this guide right now — "done"
+  // simply means a photo has been uploaded to that block, so this is
+  // always accurate with zero separate bookkeeping to maintain.
+  const photoBlocks = editorBlocks.filter(b => b.type === 'img-text' || b.type === 'image');
+  if (!photoBlocks.length){
+    document.getElementById('checklist-summary').textContent = 'No photo blocks in this guide yet.';
+    document.getElementById('checklist-list').innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center;">Add some Image or Image+Text blocks first, or run Auto-Scaffold.</div>';
+    document.getElementById('photo-checklist-modal').style.display = 'flex';
+    return;
+  }
+  const done = photoBlocks.filter(b => b.data.src).length;
+  document.getElementById('checklist-summary').textContent = `${done} / ${photoBlocks.length} photos uploaded`;
+  document.getElementById('checklist-list').innerHTML = photoBlocks.map(b => {
+    const hasPhoto = !!b.data.src;
+    const preview = (b.data.text || '(no description yet)').slice(0, 70);
+    return `<div onclick="document.getElementById('photo-checklist-modal').style.display='none';document.querySelector('[data-block-id=\\'${b.id}\\']')?.scrollIntoView({behavior:'smooth',block:'center'})"
+      style="display:flex;gap:10px;align-items:flex-start;padding:9px 4px;border-bottom:1px solid var(--border);cursor:pointer;">
+      <span style="font-size:15px;flex-shrink:0;">${hasPhoto ? '✅' : '⬜'}</span>
+      <span style="font-size:13px;color:${hasPhoto ? 'var(--text)' : 'var(--muted)'};">${escapeHtml(preview)}${(b.data.text||'').length > 70 ? '...' : ''}</span>
+    </div>`;
+  }).join('');
+  document.getElementById('photo-checklist-modal').style.display = 'flex';
+}
+
+// ISO2 codes — required by the save endpoint, so batch-scaffold needs
+// these even though the region-fetching part only needs ISO3.
+const ISO2 = {
+  "Albania":"AL","Andorra":"AD","Argentina":"AR","Australia":"AU","Austria":"AT",
+  "Bangladesh":"BD","Belgium":"BE","Bhutan":"BT","Bolivia":"BO","Botswana":"BW",
+  "Brazil":"BR","Bulgaria":"BG","Cambodia":"KH","Canada":"CA","Chile":"CL",
+  "Colombia":"CO","Costa Rica":"CR","Croatia":"HR","Cyprus":"CY","Czechia":"CZ",
+  "Denmark":"DK","Dominican Republic":"DO","Ecuador":"EC","Estonia":"EE",
+  "Eswatini":"SZ","Finland":"FI","France":"FR","Georgia":"GE","Germany":"DE",
+  "Ghana":"GH","Greece":"GR","Greenland":"GL","Guatemala":"GT","Hungary":"HU",
+  "Iceland":"IS","India":"IN","Indonesia":"ID","Ireland":"IE","Israel":"IL",
+  "Italy":"IT","Japan":"JP","Jordan":"JO","Kazakhstan":"KZ","Kenya":"KE",
+  "Kyrgyzstan":"KG","Laos":"LA","Latvia":"LV","Lebanon":"LB","Lesotho":"LS",
+  "Liechtenstein":"LI","Lithuania":"LT","Luxembourg":"LU","Madagascar":"MG",
+  "Malaysia":"MY","Malta":"MT","Mexico":"MX","Monaco":"MC","Mongolia":"MN",
+  "Montenegro":"ME","Namibia":"NA","Nepal":"NP","Netherlands":"NL",
+  "New Zealand":"NZ","Nigeria":"NG","North Macedonia":"MK","Norway":"NO",
+  "Oman":"OM","Pakistan":"PK","Palestine":"PS","Panama":"PA","Peru":"PE",
+  "Philippines":"PH","Poland":"PL","Portugal":"PT","Qatar":"QA","Romania":"RO",
+  "Russia":"RU","Rwanda":"RW","San Marino":"SM","Sao Tome and Principe":"ST",
+  "Senegal":"SN","Serbia":"RS","Singapore":"SG","Slovakia":"SK","Slovenia":"SI",
+  "South Africa":"ZA","South Korea":"KR","Spain":"ES","Sri Lanka":"LK",
+  "Sweden":"SE","Switzerland":"CH","Taiwan":"TW","Thailand":"TH","Tunisia":"TN",
+  "Turkey":"TR","Uganda":"UG","Ukraine":"UA","United Arab Emirates":"AE",
+  "United Kingdom":"GB","United States of America":"US","Uruguay":"UY","Vietnam":"VN",
+  "Bermuda":"BM","Curaçao":"CW","Faroe Islands":"FO","Guam":"GU","Isle of Man":"IM",
+  "Jersey":"JE","Northern Mariana Islands":"MP","American Samoa":"AS",
+  "Puerto Rico":"PR","United States Virgin Islands":"VI","Christmas Island":"CX","Réunion":"RE"
+};
+
+function showBatchScaffold(){
+  const guideByCountry = {};
+  (allGuides || []).forEach(g => { guideByCountry[g.country] = g; });
+  const notStarted = GEOGUESSR_COUNTRIES.filter(c => !guideByCountry[c]).sort((a,b) => a.localeCompare(b));
+
+  document.getElementById('batch-scaffold-list').innerHTML = notStarted.map(c => `
+    <label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:13px;">
+      <input type="checkbox" class="batch-scaffold-cb" value="${escapeHtml(c)}" checked>
+      ${escapeHtml(c)}
+    </label>`).join('') || '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center;">Every country already has a guide started!</div>';
+  document.getElementById('batch-scaffold-progress').textContent = '';
+  document.getElementById('batch-scaffold-modal').style.display = 'flex';
+}
+
+async function runBatchScaffold(){
+  const checked = Array.from(document.querySelectorAll('.batch-scaffold-cb:checked')).map(cb => cb.value);
+  if (!checked.length) { toast('Select at least one country', true); return; }
+  if (!confirm(`Create starter scaffolds for ${checked.length} countries? This saves each one as a new guide immediately.`)) return;
+
+  const progressEl = document.getElementById('batch-scaffold-progress');
+  let done = 0, failed = [];
+
+  for (const country of checked){
+    progressEl.textContent = `${done+1} / ${checked.length}: ${country}...`;
+    const iso = ISO2[country];
+    if (!iso){ failed.push(country); done++; continue; }
+    try {
+      const regions = await fetchScaffoldRegions(country);
+      const blocks = buildScaffoldBlocks(country, regions);
+      const res = await fetch(`${API}/admin/country_meta`, {
+        method:'POST', headers: adminHeaders(),
+        body: JSON.stringify({ country, iso, content: { blocks } })
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+    } catch(e) {
+      console.error('Batch scaffold failed for', country, e);
+      failed.push(country);
+    }
+    done++;
+  }
+
+  progressEl.textContent = `Done — ${done - failed.length} / ${checked.length} scaffolded successfully.` + (failed.length ? ` Failed: ${failed.join(', ')}` : '');
+  loadGuides();
+}
+
+function showProgressTracker(){
+  const modal = document.getElementById('progress-tracker-modal');
+  const guideByCountry = {};
+  (allGuides || []).forEach(g => { guideByCountry[g.country] = g; });
+
+  const rows = GEOGUESSR_COUNTRIES.slice().sort((a,b) => a.localeCompare(b)).map(country => {
+    const g = guideByCountry[country];
+    let statusHtml, statusColor;
+    if (g && g.source === 'manual') { statusHtml = '✅ Written'; statusColor = '#00c9a7'; }
+    else if (g) { statusHtml = '🤖 AI only'; statusColor = '#7c3aed'; }
+    else { statusHtml = '⬜ Not started'; statusColor = '#5a5a7a'; }
+    return `<div onclick="document.getElementById('progress-tracker-modal').style.display='none';${g ? `editGuide('${g.iso}','${escapeHtml(country)}')` : `openGuideEditor(null);document.getElementById('ge-country').value='${escapeHtml(country)}';`}"
+      style="display:flex;justify-content:space-between;align-items:center;padding:9px 4px;border-bottom:1px solid var(--border);cursor:pointer;">
+      <span style="font-size:13px;">${escapeHtml(country)}</span>
+      <span style="font-size:12px;font-weight:600;color:${statusColor};">${statusHtml}</span>
+    </div>`;
+  }).join('');
+
+  const written = GEOGUESSR_COUNTRIES.filter(c => guideByCountry[c] && guideByCountry[c].source === 'manual').length;
+  document.getElementById('progress-summary').textContent = `${written} / ${GEOGUESSR_COUNTRIES.length} countries written`;
+  document.getElementById('progress-list').innerHTML = rows;
+  modal.style.display = 'flex';
+}
+
+// Commonly-confused GeoGuessr country pairs — not exhaustive, but covers
+// the pairings that come up constantly in community meta discussions.
+const CONFUSE_WITH = {
+  "Australia":["New Zealand"], "New Zealand":["Australia"],
+  "United States of America":["Canada"], "Canada":["United States of America"],
+  "Argentina":["Chile","Uruguay"], "Chile":["Argentina"], "Uruguay":["Argentina"],
+  "Brazil":["Argentina"],
+  "Spain":["Portugal"], "Portugal":["Spain"],
+  "Czechia":["Slovakia","Poland"], "Slovakia":["Czechia","Hungary"],
+  "Poland":["Czechia","Lithuania","Germany"],
+  "Croatia":["Slovenia"], "Slovenia":["Croatia","Austria"],
+  "Sweden":["Norway","Finland"], "Norway":["Sweden"], "Finland":["Sweden","Estonia"],
+  "Estonia":["Latvia","Finland"], "Latvia":["Estonia","Lithuania"], "Lithuania":["Latvia","Poland"],
+  "Germany":["Austria","Netherlands"], "Austria":["Germany","Switzerland"],
+  "Switzerland":["Austria","France"], "Netherlands":["Belgium","Germany"], "Belgium":["Netherlands","France"],
+  "Malaysia":["Indonesia","Thailand"], "Indonesia":["Malaysia"],
+  "Thailand":["Laos","Cambodia"], "Laos":["Thailand","Cambodia","Vietnam"],
+  "Cambodia":["Thailand","Laos","Vietnam"], "Vietnam":["Laos","Cambodia"],
+  "Kenya":["Uganda"], "Uganda":["Kenya","Rwanda"], "Rwanda":["Uganda"],
+  "Nigeria":["Ghana"], "Ghana":["Nigeria","Senegal"], "Senegal":["Ghana"],
+  "South Africa":["Namibia","Lesotho","Eswatini","Botswana"],
+  "Namibia":["South Africa","Botswana"], "Botswana":["Namibia","South Africa"],
+  "Lesotho":["South Africa"], "Eswatini":["South Africa"],
+  "Bangladesh":["India"], "India":["Bangladesh","Pakistan","Nepal"], "Pakistan":["India"],
+  "Nepal":["India","Bhutan"], "Bhutan":["Nepal"], "Sri Lanka":["India"],
+  "Bolivia":["Peru"], "Peru":["Bolivia","Ecuador"], "Ecuador":["Peru","Colombia"],
+  "Colombia":["Ecuador","Panama"], "Panama":["Costa Rica","Colombia"], "Costa Rica":["Panama"],
+  "Guatemala":["Mexico"],
+  "Romania":["Bulgaria"], "Bulgaria":["Romania","Serbia"],
+  "Serbia":["Bulgaria","Montenegro","North Macedonia"],
+  "Montenegro":["Serbia","Croatia"], "North Macedonia":["Serbia","Bulgaria","Greece"],
+  "Greece":["North Macedonia","Albania","Turkey"], "Albania":["Greece","Montenegro","North Macedonia"],
+  "Turkey":["Greece","Bulgaria"],
+  "Ukraine":["Russia","Poland","Romania"], "Russia":["Ukraine","Kazakhstan"],
+  "Kazakhstan":["Russia","Kyrgyzstan","Mongolia"], "Kyrgyzstan":["Kazakhstan"], "Mongolia":["Russia","Kazakhstan"],
+  "Japan":["South Korea"], "South Korea":["Japan"],
+  "Mexico":["United States of America","Guatemala"],
+  "Denmark":["Netherlands","Germany","Sweden"], "Iceland":["Greenland","Norway"],
+  "Greenland":["Iceland","Canada"], "Ireland":["United Kingdom"], "United Kingdom":["Ireland"],
+  "Israel":["Jordan","Palestine"], "Jordan":["Israel"], "Palestine":["Israel","Jordan"],
+  "Lebanon":["Jordan","Israel"],
+  "Qatar":["United Arab Emirates","Oman"], "United Arab Emirates":["Qatar","Oman"], "Oman":["United Arab Emirates"],
+  "Cyprus":["Malta","Greece"], "Malta":["Cyprus"],
+  "Andorra":["Liechtenstein","Monaco","San Marino"], "Liechtenstein":["Andorra","Monaco","San Marino"],
+  "Monaco":["Andorra","Liechtenstein","San Marino"], "San Marino":["Andorra","Liechtenstein","Monaco"]
+};
+
+async function editGuide(iso, country) {
+  openGuideEditor(iso, country);
+  try {
+    const res = await fetch(`${API}/ai/country_meta`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({country, iso})
+    });
+    const data = await res.json();
+    if (data._source === 'manual' && data.blocks) {
+      data.blocks.forEach(b => addBlock(b.type, b.data || {}));
+    }
+  } catch(e) {}
+}
+
+// Same ISO3 table used by region-map.html, so region-fetching stays
+// consistent across both tools.
+const SCAFFOLD_ISO3 = {
+  "Albania":"ALB","Andorra":"AND","Argentina":"ARG","Australia":"AUS","Austria":"AUT",
+  "Bangladesh":"BGD","Belgium":"BEL","Bhutan":"BTN","Bolivia":"BOL","Botswana":"BWA",
+  "Brazil":"BRA","Bulgaria":"BGR","Cambodia":"KHM","Canada":"CAN","Chile":"CHL",
+  "Colombia":"COL","Costa Rica":"CRI","Croatia":"HRV","Cyprus":"CYP","Czechia":"CZE",
+  "Denmark":"DNK","Dominican Republic":"DOM","Ecuador":"ECU","Estonia":"EST",
+  "Eswatini":"SWZ","Finland":"FIN","France":"FRA","Georgia":"GEO","Germany":"DEU",
+  "Ghana":"GHA","Greece":"GRC","Greenland":"GRL","Guatemala":"GTM","Hungary":"HUN",
+  "Iceland":"ISL","India":"IND","Indonesia":"IDN","Ireland":"IRL","Israel":"ISR",
+  "Italy":"ITA","Japan":"JPN","Jordan":"JOR","Kazakhstan":"KAZ","Kenya":"KEN",
+  "Kyrgyzstan":"KGZ","Laos":"LAO","Latvia":"LVA","Lebanon":"LBN","Lesotho":"LSO",
+  "Liechtenstein":"LIE","Lithuania":"LTU","Luxembourg":"LUX","Madagascar":"MDG",
+  "Malaysia":"MYS","Malta":"MLT","Mexico":"MEX","Monaco":"MCO","Mongolia":"MNG",
+  "Montenegro":"MNE","Namibia":"NAM","Nepal":"NPL","Netherlands":"NLD",
+  "New Zealand":"NZL","Nigeria":"NGA","North Macedonia":"MKD","Norway":"NOR",
+  "Oman":"OMN","Pakistan":"PAK","Palestine":"PSE","Panama":"PAN","Peru":"PER",
+  "Philippines":"PHL","Poland":"POL","Portugal":"PRT","Qatar":"QAT","Romania":"ROU",
+  "Russia":"RUS","Rwanda":"RWA","San Marino":"SMR","Sao Tome and Principe":"STP",
+  "Senegal":"SEN","Serbia":"SRB","Singapore":"SGP","Slovakia":"SVK","Slovenia":"SVN",
+  "South Africa":"ZAF","South Korea":"KOR","Spain":"ESP","Sri Lanka":"LKA",
+  "Sweden":"SWE","Switzerland":"CHE","Taiwan":"TWN","Thailand":"THA","Tunisia":"TUN",
+  "Turkey":"TUR","Uganda":"UGA","Ukraine":"UKR","United Arab Emirates":"ARE",
+  "United Kingdom":"GBR","United States of America":"USA","Uruguay":"URY",
+  "Vietnam":"VNM","Bermuda":"BMU","Curaçao":"CUW","Faroe Islands":"FRO","Guam":"GUM",
+  "Isle of Man":"IMN","Jersey":"JEY","Northern Mariana Islands":"MNP",
+  "American Samoa":"ASM","Puerto Rico":"PRI","United States Virgin Islands":"VIR",
+  "Christmas Island":"CXR","Réunion":"REU"
+};
+
+// Objective, publicly-verifiable facts (not GeoGuessr-community trivia) —
+// safe to auto-fill, unlike bollards/signs/road-lines which genuinely vary
+// and need real research per country.
+const DRIVING_SIDE = {
+  "Albania":"right","Andorra":"right","Argentina":"right","Australia":"left","Austria":"right",
+  "Bangladesh":"left","Belgium":"right","Bhutan":"left","Bolivia":"right","Botswana":"left",
+  "Brazil":"right","Bulgaria":"right","Cambodia":"right","Canada":"right","Chile":"right",
+  "Colombia":"right","Costa Rica":"right","Croatia":"right","Cyprus":"left","Czechia":"right",
+  "Denmark":"right","Dominican Republic":"right","Ecuador":"right","Estonia":"right",
+  "Eswatini":"left","Finland":"right","France":"right","Georgia":"right","Germany":"right",
+  "Ghana":"right","Greece":"right","Greenland":"right","Guatemala":"right","Hungary":"right",
+  "Iceland":"right","India":"left","Indonesia":"left","Ireland":"left","Israel":"right",
+  "Italy":"right","Japan":"left","Jordan":"right","Kazakhstan":"right","Kenya":"left",
+  "Kyrgyzstan":"right","Laos":"right","Latvia":"right","Lebanon":"right","Lesotho":"left",
+  "Liechtenstein":"right","Lithuania":"right","Luxembourg":"right","Madagascar":"right",
+  "Malaysia":"left","Malta":"left","Mexico":"right","Monaco":"right","Mongolia":"right",
+  "Montenegro":"right","Namibia":"left","Nepal":"left","Netherlands":"right",
+  "New Zealand":"left","Nigeria":"right","North Macedonia":"right","Norway":"right",
+  "Oman":"right","Pakistan":"left","Palestine":"right","Panama":"right","Peru":"right",
+  "Philippines":"right","Poland":"right","Portugal":"right","Qatar":"right","Romania":"right",
+  "Russia":"right","Rwanda":"right","San Marino":"right","Sao Tome and Principe":"right",
+  "Senegal":"right","Serbia":"right","Singapore":"left","Slovakia":"right","Slovenia":"right",
+  "South Africa":"left","South Korea":"right","Spain":"right","Sri Lanka":"left",
+  "Sweden":"right","Switzerland":"right","Taiwan":"right","Thailand":"left","Tunisia":"right",
+  "Turkey":"right","Uganda":"left","Ukraine":"right","United Arab Emirates":"right",
+  "United Kingdom":"left","United States of America":"right","Uruguay":"right","Vietnam":"right",
+  "Bermuda":"left","Curaçao":"right","Faroe Islands":"right","Guam":"right","Isle of Man":"left",
+  "Jersey":"left","Northern Mariana Islands":"right","American Samoa":"right",
+  "Puerto Rico":"right","United States Virgin Islands":"left","Christmas Island":"left",
+  "Réunion":"right"
+};
+
+const HEMISPHERE = {
+  "Albania":"northern","Andorra":"northern","Argentina":"southern","Australia":"southern",
+  "Austria":"northern","Bangladesh":"northern","Belgium":"northern","Bhutan":"northern",
+  "Bolivia":"southern","Botswana":"southern","Brazil":"southern","Bulgaria":"northern",
+  "Cambodia":"northern","Canada":"northern","Chile":"southern","Colombia":"northern",
+  "Costa Rica":"northern","Croatia":"northern","Cyprus":"northern","Czechia":"northern",
+  "Denmark":"northern","Dominican Republic":"northern","Ecuador":"southern","Estonia":"northern",
+  "Eswatini":"southern","Finland":"northern","France":"northern","Georgia":"northern",
+  "Germany":"northern","Ghana":"northern","Greece":"northern","Greenland":"northern",
+  "Guatemala":"northern","Hungary":"northern","Iceland":"northern","India":"northern",
+  "Indonesia":"southern","Ireland":"northern","Israel":"northern","Italy":"northern",
+  "Japan":"northern","Jordan":"northern","Kazakhstan":"northern","Kenya":"southern",
+  "Kyrgyzstan":"northern","Laos":"northern","Latvia":"northern","Lebanon":"northern",
+  "Lesotho":"southern","Liechtenstein":"northern","Lithuania":"northern","Luxembourg":"northern",
+  "Madagascar":"southern","Malaysia":"northern","Malta":"northern","Mexico":"northern",
+  "Monaco":"northern","Mongolia":"northern","Montenegro":"northern","Namibia":"southern",
+  "Nepal":"northern","Netherlands":"northern","New Zealand":"southern","Nigeria":"northern",
+  "North Macedonia":"northern","Norway":"northern","Oman":"northern","Pakistan":"northern",
+  "Palestine":"northern","Panama":"northern","Peru":"southern","Philippines":"northern",
+  "Poland":"northern","Portugal":"northern","Qatar":"northern","Romania":"northern",
+  "Russia":"northern","Rwanda":"southern","San Marino":"northern",
+  "Sao Tome and Principe":"northern","Senegal":"northern","Serbia":"northern",
+  "Singapore":"northern","Slovakia":"northern","Slovenia":"northern","South Africa":"southern",
+  "South Korea":"northern","Spain":"northern","Sri Lanka":"northern","Sweden":"northern",
+  "Switzerland":"northern","Taiwan":"northern","Thailand":"northern","Tunisia":"northern",
+  "Turkey":"northern","Uganda":"northern","Ukraine":"northern","United Arab Emirates":"northern",
+  "United Kingdom":"northern","United States of America":"northern","Uruguay":"southern",
+  "Vietnam":"northern","Bermuda":"northern","Curaçao":"northern","Faroe Islands":"northern",
+  "Guam":"northern","Isle of Man":"northern","Jersey":"northern",
+  "Northern Mariana Islands":"northern","American Samoa":"southern","Puerto Rico":"northern",
+  "United States Virgin Islands":"northern","Christmas Island":"southern","Réunion":"southern"
+};
+
+function slugifyForPlonkit(country){
+  return country.toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-');
+}
+
+async function fetchScaffoldRegions(country){
+  const iso3 = SCAFFOLD_ISO3[country];
+  if (!iso3) return [];
+  try {
+    const url = `https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/main/releaseData/gbOpen/${iso3}/ADM1/geoBoundaries-${iso3}-ADM1_simplified.geojson`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const geo = await res.json();
+    return (geo.features || [])
+      .map(f => f.properties && f.properties.shapeName)
+      .filter(Boolean)
+      .sort((a,b) => a.localeCompare(b));
+  } catch(e) {
+    console.warn('Scaffold: could not fetch region list', e);
+    return [];
+  }
+}
+
+// Pure function: given a country and its region list, returns the array
+// of {type, data} block definitions for the starter scaffold. Used by
+// both the single-country Auto-Scaffold button (via addBlock) and the
+// batch-scaffold feature (which saves directly via the API instead).
+function buildScaffoldBlocks(country, regions){
+  const blocks = [];
+  blocks.push({ type:'nav', data:{ buttons: ['Overall','Region Specific','Vegetation & Landscapes','Documents & Links'] } });
+
+  blocks.push({ type:'heading', data:{ text: 'Overall' } });
+  const side = DRIVING_SIDE[country];
+  const hemi = HEMISPHERE[country];
+  const overallPrompts = [
+    side ? `${country} drives on the ${side} side of the road.` : `${country} drives on the [left / right] side of the road.`,
+    hemi ? `${country} is located in the ${hemi} hemisphere.` : `${country} is located in the [northern / southern] hemisphere.`,
+    `${country}'s bollards are [describe shape, color, reflector placement].`,
+    `${country} mainly uses [white / yellow] road lines.`,
+    `${country}'s warning signs are [shape] and [color].`,
+    `${country}'s speed limit signs use [describe style].`
+  ];
+  overallPrompts.forEach(text => blocks.push({ type:'img-text', data:{ text, imgWidth:'55' } }));
+
+  (CONFUSE_WITH[country] || []).forEach(other => {
+    blocks.push({ type:'warning', data:{ text: `${other} — [describe the specific visual difference from ${country}].` } });
+  });
+
+  blocks.push({ type:'heading', data:{ text: 'Region Specific' } });
+  if (regions.length){
+    blocks.push({ type:'region-tabs', data:{ buttons: regions } });
+    regions.forEach(region => {
+      blocks.push({ type:'heading', data:{ text: region } });
+      blocks.push({ type:'img-text', data:{ text: `${region} tell goes here...`, imgWidth:'55' } });
+    });
+  } else {
+    blocks.push({ type:'text', data:{ text: `Couldn't auto-fetch a region list for ${country} — add region headings manually, or double-check the country name matches exactly.` } });
+  }
+
+  blocks.push({ type:'heading', data:{ text: 'Vegetation & Landscapes' } });
+  blocks.push({ type:'img-text', data:{ text: 'Describe a distinctive landscape/vegetation tell here...', imgWidth:'55' } });
+
+  blocks.push({ type:'heading', data:{ text: 'Documents & Links' } });
+  blocks.push({ type:'links', data:{ items: [
+    { label: `A Balanced ${country} map`, url: '' },
+    { label: `${country} Discord`, url: '' },
+    { label: 'Plonkit guide', url: `https://www.plonkit.net/${slugifyForPlonkit(country)}` },
+    { label: `Definitive ${country} guide`, url: '' },
+    { label: `${country} Tips and Hints`, url: '' }
+  ] } });
+
+  return blocks;
+}
+
+async function autoScaffoldCountry(){
+  const country = document.getElementById('ge-country').value.trim();
+  if (!country) { toast('Enter a country name first', true); return; }
+  if (editorBlocks.length && !confirm(`This adds a full starter scaffold on top of the ${editorBlocks.length} block(s) already here. Continue?`)) return;
+
+  toast(`Fetching ${country}'s region list...`);
+  const regions = await fetchScaffoldRegions(country);
+  const blocks = buildScaffoldBlocks(country, regions);
+  blocks.forEach(b => addBlock(b.type, b.data));
+
+  toast(`Scaffold generated for ${country}${regions.length ? ' — ' + regions.length + ' regions found' : ' (no region list found)'}`);
+}
+
+// ── Block management ──────────────────────────────────────
+function addBlock(type, data={}) {
+  const id = ++blockIdCounter;
+  const block = { id, type, data: {...data} };
+  editorBlocks.push(block);
+  renderBlock(block);
+  updatePreview();
+}
+
+// Inserts a new block directly after another block, instead of always
+// appending to the end — this is what powers the "+ Add block below"
+// button under every block, so you don't have to scroll to the bottom
+// panel just to add the next block in a region.
+function insertBlockAfter(afterId, type) {
+  const id = ++blockIdCounter;
+  const block = { id, type, data: {} };
+  const idx = editorBlocks.findIndex(b => b.id === afterId);
+  if (idx === -1) editorBlocks.push(block);
+  else editorBlocks.splice(idx + 1, 0, block);
+
+  const pane = document.getElementById('editor-left');
+  const scrollPos = pane.scrollTop;
+  const list = document.getElementById('block-list');
+  list.innerHTML = '';
+  editorBlocks.forEach(b => renderBlock(b));
+  pane.scrollTop = scrollPos;
+  updatePreview();
+}
+
+function toggleInlineAddMenu(blockId) {
+  const menu = document.getElementById(`inline-add-menu-${blockId}`);
+  if (!menu) return;
+  const wasOpen = menu.style.display === 'grid';
+  closeAllInlineAddMenus();
+  if (!wasOpen) menu.style.display = 'grid';
+}
+function closeAllInlineAddMenus() {
+  document.querySelectorAll('.ge-inline-add-menu').forEach(m => m.style.display = 'none');
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.ge-inline-add-wrap')) closeAllInlineAddMenus();
+});
+
+function renderBlock(block) {
+  const el = document.createElement('div');
+  el.className = 'block-card';
+  el.dataset.blockId = block.id;
+
+  const labels = {heading:'H', text:'¶', image:'🖼', tip:'💡', warning:'⚠️', 'two-col':'⬛⬛', 'img-text':'🖼¶', links:'🔗', nav:'📋', 'region-tabs':'🗺️', divider:'—', spacer:'↕'};
+  let inner = '';
+
+  switch(block.type) {
+    case 'heading':
+      inner = `<textarea class="be be-heading" rows="1" placeholder="Section heading..." oninput="syncBlock(${block.id},'text',this.value);autoResize(this)">${escapeHtml(block.data.text||'')}</textarea>`;
+      break;
+    case 'text':
+      inner = `${fmtToolbar('ta-text-'+block.id, block.id, 'text')}<textarea id="ta-text-${block.id}" class="be" rows="6" placeholder="Write your guide content here. Describe what to look for, specific visual clues, regional differences, tips — anything you know about this country in GeoGuessr." oninput="syncBlock(${block.id},'text',this.value);autoResize(this)">${escapeHtml(block.data.text||'')}</textarea>`;
+      break;
+    case 'image':
+      const imgSrc = block.data.src;
+      const isUploading = imgSrc === '__uploading__';
+      inner = `
+        <div class="img-drop-zone" id="dropzone-${block.id}"
+          onclick="${isUploading ? '' : `document.getElementById('file-${block.id}').click()`}"
+          ondragover="event.preventDefault()"
+          ondrop="${isUploading ? '' : `handleDrop(${block.id},event)`}">
+          <input type="file" id="file-${block.id}" accept="image/*" style="display:none" onchange="handleFileSelect(${block.id},this)">
+          ${isUploading
+            ? `<div style="padding:24px;color:#00c9a7;"><div style="width:28px;height:28px;border:3px solid #1e1e38;border-top-color:#00c9a7;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 10px;"></div><div style="font-size:13px;">Uploading...</div></div>`
+            : imgSrc
+              ? `<img src="${imgSrc}" style="max-width:100%;border-radius:6px;">`
+              : `<div style="color:var(--muted)"><div style="font-size:28px;margin-bottom:6px">🖼️</div><div style="font-size:13px">Click to upload · Drag & drop · <strong>Paste (Ctrl+V)</strong></div></div>`}
+        </div>
+        <textarea class="be" rows="1" placeholder="Caption (optional)..." style="margin-top:8px;" oninput="syncBlock(${block.id},'caption',this.value);autoResize(this)">${escapeHtml(block.data.caption||'')}</textarea>`;
+      break;
+    case 'tip':
+      inner = `<div style="background:rgba(0,201,167,0.07);border-left:3px solid #00c9a7;border-radius:0 7px 7px 0;padding:10px 12px">
+        <div style="font-size:10px;color:#00c9a7;font-weight:700;margin-bottom:6px;text-transform:uppercase">💡 Tip</div>
+        ${fmtToolbar('ta-tip-'+block.id, block.id, 'text')}<textarea id="ta-tip-${block.id}" class="be" rows="3" placeholder="A specific tip or giveaway clue..." oninput="syncBlock(${block.id},'text',this.value);autoResize(this)" style="background:transparent;border:1px solid rgba(0,201,167,0.2)">${escapeHtml(block.data.text||'')}</textarea>
+      </div>${attachToggle(block)}`;
+      break;
+    case 'warning':
+      inner = `<div style="background:rgba(255,107,107,0.07);border-left:3px solid #ff6b6b;border-radius:0 7px 7px 0;padding:10px 12px">
+        <div style="font-size:10px;color:#ff6b6b;font-weight:700;margin-bottom:6px;text-transform:uppercase">⚠️ Easy to Confuse With</div>
+        ${fmtToolbar('ta-warn-'+block.id, block.id, 'text')}<textarea id="ta-warn-${block.id}" class="be" rows="3" placeholder="What country this looks like and the key visual difference..." oninput="syncBlock(${block.id},'text',this.value);autoResize(this)" style="background:transparent;border:1px solid rgba(255,107,107,0.2)">${escapeHtml(block.data.text||'')}</textarea>
+      </div>${attachToggle(block)}`;
+      break;
+    case 'two-col':
+      inner = `${attachToggle(block)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Left</div>
+          ${fmtToolbar('ta-left-'+block.id, block.id, 'left')}<textarea id="ta-left-${block.id}" class="be" rows="5" placeholder="Left column..." oninput="syncBlock(${block.id},'left',this.value);autoResize(this)">${escapeHtml(block.data.left||'')}</textarea>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Right</div>
+          ${fmtToolbar('ta-right-'+block.id, block.id, 'right')}<textarea id="ta-right-${block.id}" class="be" rows="5" placeholder="Right column..." oninput="syncBlock(${block.id},'right',this.value);autoResize(this)">${escapeHtml(block.data.right||'')}</textarea>
+        </div>
+      </div>`;
+      break;
+    case 'img-text':
+      const imgW = block.data.imgWidth || '55';
+      const mapSrc = block.data.mapSrc;
+      const mapBadgeSize = block.data.mapBadgeSize || '110';
+      inner = `
+        ${attachToggle(block)}
+        <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;">
+          <span style="font-size:12px;color:var(--muted);">Image width:</span>
+          <span id="imgwbtns-${block.id}">${['25','33','40','50','60','70','80','90','100'].map(w => `<button data-val="${w}" onclick="setImgWidth(${block.id},'${w}')" style="padding:3px 10px;border-radius:5px;border:1px solid ${imgW===w?'#00c9a7':'var(--border)'};background:${imgW===w?'rgba(0,201,167,0.15)':'var(--bg2)'};color:${imgW===w?'#00c9a7':'var(--muted)'};cursor:pointer;font-size:12px;">${w}%</button>`).join('')}</span>
+        </div>
+        <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;">
+          <span style="font-size:12px;color:var(--muted);">Map badge size:</span>
+          <span id="badgebtns-${block.id}">${['60','80','100','110','130','150','180','220','260','300'].map(s => `<button data-val="${s}" onclick="setMapBadgeSize(${block.id},'${s}')" style="padding:3px 10px;border-radius:5px;border:1px solid ${mapBadgeSize===s?'#00c9a7':'var(--border)'};background:${mapBadgeSize===s?'rgba(0,201,167,0.15)':'var(--bg2)'};color:${mapBadgeSize===s?'#00c9a7':'var(--muted)'};cursor:pointer;font-size:12px;">${s}px</button>`).join('')}</span>
+        </div>
+        <div id="itgrid-${block.id}" style="display:grid;grid-template-columns:${imgW==='100'?'1fr':imgW+'% 1fr'};gap:14px;align-items:start;">          <div>
+            <div style="position:relative;">
+              <div class="img-drop-zone" id="dropzone-${block.id}" onclick="document.getElementById('file-it-${block.id}').click()" ondrop="handleDrop(${block.id},event)" ondragover="event.preventDefault()">
+                <input type="file" id="file-it-${block.id}" accept="image/*" style="display:none" onchange="handleFileSelect(${block.id},this)">
+                ${block.data.src === '__uploading__'
+                  ? `<div style="padding:16px;color:#00c9a7;"><div style="width:22px;height:22px;border:2px solid #1e1e38;border-top-color:#00c9a7;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 8px;"></div><div style="font-size:12px">Uploading...</div></div>`
+                  : block.data.src ? `<img src="${block.data.src}" style="width:100%;height:auto;display:block;border-radius:6px;">` : `<div style="color:var(--muted);font-size:12px;padding:16px 0">🖼️<br>Click or paste</div>`}
+              </div>
+              <div class="map-badge-drop-zone" id="badge-${block.id}" onclick="document.getElementById('file-map-${block.id}').click()" ondrop="handleDrop(${block.id},event,'mapSrc')" ondragover="event.preventDefault()"
+                style="position:absolute;bottom:14px;right:14px;width:${mapBadgeSize}px;height:${mapBadgeSize}px;border-radius:6px;overflow:hidden;cursor:pointer;background:transparent;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.55));">
+                <input type="file" id="file-map-${block.id}" accept="image/*" style="display:none" onchange="handleFileSelect(${block.id},this,'mapSrc')">
+                ${mapSrc === '__uploading__'
+                  ? `<div style="width:14px;height:14px;border:2px solid #ddd;border-top-color:#00c9a7;border-radius:50%;animation:spin 1s linear infinite;"></div>`
+                  : mapSrc ? `<img src="${mapSrc}" style="width:100%;height:100%;object-fit:contain;">` : `<span style="font-size:18px;">🗺️</span>`}
+              </div>
+              ${mapSrc && mapSrc !== '__uploading__' ? `<button id="badgermv-${block.id}" onclick="event.stopPropagation();syncBlock(${block.id},'mapSrc','')" title="Remove map badge" style="position:absolute;bottom:${parseInt(mapBadgeSize)+22}px;right:12px;width:20px;height:20px;border-radius:50%;background:#1a1a2e;border:1px solid var(--border);color:var(--muted);font-size:12px;line-height:1;cursor:pointer;">✕</button>` : ''}
+            </div>
+            <div style="font-size:10px;color:var(--muted);margin-top:4px;text-align:center;">${mapSrc && mapSrc !== '__uploading__' ? 'Click 🗺️ badge to replace' : 'Click 🗺️ to add a mini-map badge'}</div>
+            <textarea class="be" rows="1" placeholder="Caption..." style="margin-top:6px;font-size:11px;" oninput="syncBlock(${block.id},'caption',this.value);autoResize(this)">${escapeHtml(block.data.caption||'')}</textarea>
+          </div>
+          <div>${fmtToolbar('ta-it-'+block.id, block.id, 'text')}<textarea id="ta-it-${block.id}" class="be" rows="8" placeholder="Text to the right of the image..." oninput="syncBlock(${block.id},'text',this.value);autoResize(this)">${escapeHtml(block.data.text||'')}</textarea></div>
+        </div>`;
+      break;
+    case 'links':
+      const linkItems = block.data.items || [{}];
+      inner = `
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px;">🔗 Links / Resources</div>
+        <div id="links-list-${block.id}" style="display:flex;flex-direction:column;gap:10px;">
+          ${linkItems.map((item, i) => `
+            <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+              <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-bottom:6px;">
+                <div>
+                  <div style="font-size:10px;color:var(--muted);margin-bottom:3px;text-transform:uppercase;">Title</div>
+                  <textarea class="be" rows="1" placeholder="e.g. Definitive Australia Guide" oninput="updateLinkItem(${block.id},${i},'label',this.value);autoResize(this)">${escapeHtml(item.label||'')}</textarea>
+                </div>
+                <div>
+                  <div style="font-size:10px;color:var(--muted);margin-bottom:3px;text-transform:uppercase;">URL (optional)</div>
+                  <textarea class="be" rows="1" placeholder="https://..." oninput="updateLinkItem(${block.id},${i},'url',this.value);autoResize(this)">${escapeHtml(item.url||'')}</textarea>
+                </div>
+                <button onclick="removeLinkItem(${block.id},${i})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:4px 8px;margin-top:16px;" title="Remove">✕</button>
+              </div>
+              <div>
+                <div style="font-size:10px;color:var(--muted);margin-bottom:3px;text-transform:uppercase;">Description (optional)</div>
+                <textarea class="be" rows="2" placeholder="Short description of this resource..." oninput="updateLinkItem(${block.id},${i},'desc',this.value);autoResize(this)">${escapeHtml(item.desc||'')}</textarea>
+              </div>
+            </div>`).join('')}
+        </div>
+        <button onclick="addLinkItem(${block.id})" style="margin-top:10px;background:var(--bg2);border:1px dashed var(--border);color:var(--muted);padding:6px 16px;border-radius:7px;cursor:pointer;font-size:12px;width:100%;">+ Add Link</button>`;
+      break;
+    case 'divider':
+      inner = `<div style="border-top:1px solid #2a2a4a;margin:4px 0;"></div>`;
+      break;
+    case 'spacer':
+      const spH = block.data.height || 32;
+      inner = `<div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:11px;color:#444466;">Space height:</span>
+        ${[16,32,48,64].map(h => `<button onclick="syncBlock(${block.id},'height',${h})" style="padding:3px 10px;border-radius:5px;border:1px solid ${spH===h?'#7c3aed':'#151525'};background:${spH===h?'rgba(124,58,237,0.15)':'#080814'};color:${spH===h?'#a78bfa':'#444466'};cursor:pointer;font-size:11px;">${h}px</button>`).join('')}
+      </div>
+      <div style="height:${spH}px;border:1px dashed #151525;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#222244;font-size:11px;margin-top:8px;">${spH}px gap</div>`;
+      break;
+    case 'region-tabs': {
+      const rtBtns = block.data.buttons || [''];
+      inner = `<div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px;">🗺️ Region Tabs — type each region name</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${rtBtns.map((btn, i) => `
+            <div style="display:flex;gap:8px;align-items:center;">
+              <textarea class="be" rows="1" placeholder="e.g. New South Wales" style="flex:1;" oninput="updateRegionTab(${block.id},${i},this.value);autoResize(this)">${escapeHtml(btn)}</textarea>
+              <button onclick="removeRegionTab(${block.id},${i})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:4px 8px;">✕</button>
+            </div>`).join('')}
+        </div>
+        <button onclick="addRegionTab(${block.id})" style="margin-top:10px;background:var(--bg2);border:1px dashed var(--border);color:var(--muted);padding:6px 16px;border-radius:7px;cursor:pointer;font-size:12px;width:100%;">+ Add Region</button>
+        <div style="margin-top:10px;font-size:11px;color:var(--muted);background:rgba(0,201,167,0.06);border:1px solid rgba(0,201,167,0.15);border-radius:6px;padding:8px 12px;">💡 Each region name must match a <strong style="color:#00c9a7">Heading block</strong> below it. Renders as styled tabs in the guide.</div>
+      </div>`;
+      break;
+    }
+    case 'nav': {
+      const navBtns = block.data.buttons || [''];
+      inner = `<div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px;">🔗 Navigation Buttons — type each button label</div>
+        <div id="nav-btns-${block.id}" style="display:flex;flex-direction:column;gap:8px;">
+          ${navBtns.map((btn, i) => `
+            <div style="display:flex;gap:8px;align-items:center;">
+              <textarea class="be" rows="1" placeholder="Button label e.g. Identifying Australia..." style="flex:1;" oninput="updateNavBtn(${block.id},${i},this.value);autoResize(this)">${escapeHtml(btn)}</textarea>
+              <button onclick="removeNavBtn(${block.id},${i})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:4px 8px;" title="Remove">✕</button>
+            </div>`).join('')}
+        </div>
+        <button onclick="addNavBtn(${block.id})" style="margin-top:10px;background:var(--bg2);border:1px dashed var(--border);color:var(--muted);padding:6px 16px;border-radius:7px;cursor:pointer;font-size:12px;width:100%;">+ Add Button</button>
+        <div style="margin-top:10px;font-size:11px;color:var(--muted);background:rgba(0,201,167,0.06);border:1px solid rgba(0,201,167,0.15);border-radius:6px;padding:8px 12px;">💡 <strong style="color:#00c9a7">To link a button:</strong> type the button label exactly the same as a Heading block in your guide. e.g. Button label "Road Meta" → scrolls to a Heading that says "Road Meta".</div>
+      </div>`;
+      break;
+    }
+  }
+  el.innerHTML = `
+    <div class="block-toolbar">
+      <span class="drag-handle" title="Drag to reorder just this block" onmousedown="startDrag(event,${block.id})">⠿</span>
+      ${block.type === 'heading' ? `<span class="drag-handle group-drag-handle" title="Drag this whole region — the heading plus every block under it, until the next heading" onmousedown="startGroupDrag(event,${block.id})">⣿ Region</span>` : ''}
+      <span class="block-tag">${labels[block.type]||block.type}</span>
+      <button class="block-move" onclick="moveBlock(${block.id},-1)">↑</button>
+      <button class="block-move" onclick="moveBlock(${block.id},1)">↓</button>
+      <button class="block-delete" onclick="deleteBlock(${block.id})">✕</button>
+    </div>
+    ${inner}
+    <div class="ge-inline-add-wrap">
+      <button class="ge-inline-add-btn" onclick="toggleInlineAddMenu(${block.id})">+ Add block below</button>
+      <div class="ge-inline-add-menu" id="inline-add-menu-${block.id}" style="display:none;">
+        <button onclick="insertBlockAfter(${block.id},'heading')" class="ge-add-btn"><span class="ge-add-icon">H</span><span class="ge-add-name">Heading</span></button>
+        <button onclick="insertBlockAfter(${block.id},'text')" class="ge-add-btn"><span class="ge-add-icon">¶</span><span class="ge-add-name">Text</span></button>
+        <button onclick="insertBlockAfter(${block.id},'image')" class="ge-add-btn"><span class="ge-add-icon">🖼</span><span class="ge-add-name">Image</span></button>
+        <button onclick="insertBlockAfter(${block.id},'img-text')" class="ge-add-btn"><span class="ge-add-icon">🖼¶</span><span class="ge-add-name">Image + Text</span></button>
+        <button onclick="insertBlockAfter(${block.id},'two-col')" class="ge-add-btn"><span class="ge-add-icon">⬛⬛</span><span class="ge-add-name">Two Column</span></button>
+        <button onclick="insertBlockAfter(${block.id},'tip')" class="ge-add-btn"><span class="ge-add-icon">💡</span><span class="ge-add-name">Tip</span></button>
+        <button onclick="insertBlockAfter(${block.id},'warning')" class="ge-add-btn"><span class="ge-add-icon">⚠️</span><span class="ge-add-name">Confuse With</span></button>
+        <button onclick="insertBlockAfter(${block.id},'links')" class="ge-add-btn"><span class="ge-add-icon">🔗</span><span class="ge-add-name">Links List</span></button>
+        <button onclick="insertBlockAfter(${block.id},'nav')" class="ge-add-btn"><span class="ge-add-icon">📋</span><span class="ge-add-name">Nav Buttons</span></button>
+        <button onclick="insertBlockAfter(${block.id},'region-tabs')" class="ge-add-btn"><span class="ge-add-icon">🗺️</span><span class="ge-add-name">Region Tabs</span></button>
+        <button onclick="insertBlockAfter(${block.id},'divider')" class="ge-add-btn"><span class="ge-add-icon">—</span><span class="ge-add-name">Divider</span></button>
+        <button onclick="insertBlockAfter(${block.id},'spacer')" class="ge-add-btn"><span class="ge-add-icon">↕</span><span class="ge-add-name">Spacer</span></button>
+      </div>
+    </div>`;
+
+  document.getElementById('block-list').appendChild(el);
+  el.querySelectorAll('textarea').forEach(ta => autoResize(ta));
+}
+
+function autoResize(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = Math.max(ta.scrollHeight, 60) + 'px';
+}
+
+// ── Mouse-based block drag sorting ────────────────────────
+let dragState = null;
+let autoScrollInterval = null;
+
+// A "region group" is a heading block plus every block that follows it
+// up until (but not including) the next heading block.
+function getGroupBlockIdsFor(headingIndex) {
+  const ids = [editorBlocks[headingIndex].id];
+  for (let i = headingIndex + 1; i < editorBlocks.length; i++) {
+    if (editorBlocks[i].type === 'heading') break;
+    ids.push(editorBlocks[i].id);
+  }
+  return ids;
+}
+// Walks backward from blockIndex to find the nearest heading at or
+// before it — i.e. "which region does this block belong to". Returns
+// null if there's no heading before this point (an ungrouped block
+// sitting above the first region).
+function getGroupStartIndex(blockIndex) {
+  for (let i = blockIndex; i >= 0; i--) {
+    if (editorBlocks[i].type === 'heading') return i;
+  }
+  return null;
+}
+
+function startDrag(e, blockId) {
+  e.preventDefault();
+  e.stopPropagation();
+  beginDragWithIds([blockId]);
+}
+
+function startGroupDrag(e, headingBlockId) {
+  e.preventDefault();
+  e.stopPropagation();
+  const headingIdx = editorBlocks.findIndex(b => b.id === headingBlockId);
+  if (headingIdx < 0) return;
+  beginDragWithIds(getGroupBlockIdsFor(headingIdx));
+}
+
+function beginDragWithIds(blockIds) {
+  const cards = blockIds.map(id => document.querySelector(`[data-block-id="${id}"]`)).filter(Boolean);
+  if (!cards.length) return;
+  cards.forEach(c => { c.style.opacity = '0.35'; c.style.outline = '2px dashed #7c3aed'; });
+  dragState = { blockIds, cards };
+
+  document.addEventListener('mousemove', onDragMove);
+  document.addEventListener('mouseup', onDragEnd);
+}
+
+function onDragMove(e) {
+  if (!dragState) return;
+
+  // Auto-scroll editor pane when near top/bottom edges
+  const pane = document.getElementById('editor-left');
+  const paneRect = pane.getBoundingClientRect();
+  clearInterval(autoScrollInterval);
+  if (e.clientY < paneRect.top + 60) {
+    autoScrollInterval = setInterval(() => { pane.scrollTop -= 8; }, 16);
+  } else if (e.clientY > paneRect.bottom - 60) {
+    autoScrollInterval = setInterval(() => { pane.scrollTop += 8; }, 16);
+  }
+
+  // Highlight drop target
+  document.querySelectorAll('.block-card').forEach(c => c.classList.remove('drag-over'));
+  const targetCard = document.elementFromPoint(e.clientX, e.clientY)?.closest('.block-card');
+  if (!targetCard) return;
+  const targetId = parseInt(targetCard.dataset.blockId);
+  if (dragState.blockIds.includes(targetId)) return;
+
+  if (dragState.blockIds.length > 1) {
+    // Dragging a whole region — highlight the ENTIRE destination
+    // region (not just the one card under the cursor), so it's clear
+    // the dragged region will be inserted at that region's position
+    // rather than splitting it apart.
+    const targetIdx = editorBlocks.findIndex(b => b.id === targetId);
+    const groupStart = getGroupStartIndex(targetIdx);
+    const ids = groupStart !== null ? getGroupBlockIdsFor(groupStart) : [targetId];
+    ids.forEach(id => document.querySelector(`[data-block-id="${id}"]`)?.classList.add('drag-over'));
+  } else {
+    targetCard.classList.add('drag-over');
+  }
+}
+
+function onDragEnd(e) {
+  if (!dragState) return;
+  clearInterval(autoScrollInterval);
+
+  const { blockIds, cards } = dragState;
+  cards.forEach(c => { c.style.opacity = ''; c.style.outline = ''; });
+
+  const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.block-card');
+  document.querySelectorAll('.block-card').forEach(c => c.classList.remove('drag-over'));
+  document.removeEventListener('mousemove', onDragMove);
+  document.removeEventListener('mouseup', onDragEnd);
+  dragState = null;
+
+  if (!target || !target.dataset.blockId) return;
+  const targetId = parseInt(target.dataset.blockId);
+  if (blockIds.includes(targetId)) return; // dropped on itself — no-op
+
+  const targetIdx = editorBlocks.findIndex(b => b.id === targetId);
+  if (targetIdx < 0) return;
+
+  // For a region drag, always snap the insertion point to the START
+  // of whichever region was dropped on, so the dragged region always
+  // lands as a whole unit rather than splitting another region's
+  // blocks apart. A single-block drag drops exactly where released.
+  let anchorId = targetId;
+  if (blockIds.length > 1) {
+    const groupStart = getGroupStartIndex(targetIdx);
+    if (groupStart !== null) anchorId = editorBlocks[groupStart].id;
+  }
+
+  const draggedBlocks = blockIds.map(id => editorBlocks.find(b => b.id === id));
+  editorBlocks = editorBlocks.filter(b => !blockIds.includes(b.id));
+  let insertAt = editorBlocks.findIndex(b => b.id === anchorId);
+  if (insertAt === -1) insertAt = editorBlocks.length;
+  editorBlocks.splice(insertAt, 0, ...draggedBlocks);
+
+  const pane = document.getElementById('editor-left');
+  const scrollPos = pane.scrollTop;
+  const list = document.getElementById('block-list');
+  list.innerHTML = '';
+  editorBlocks.forEach(b => renderBlock(b));
+  pane.scrollTop = scrollPos;
+  updatePreview();
+}
+
+function syncBlock(id, key, value) {
+  const b = editorBlocks.find(b => b.id === id);
+  if (b) { b.data[key] = value; updatePreview(); }
+}
+
+function setImgWidth(id, w) {
+  const b = editorBlocks.find(b => b.id === id);
+  if (!b) return;
+  b.data.imgWidth = w;
+  const grid = document.getElementById('itgrid-' + id);
+  if (grid) grid.style.gridTemplateColumns = (w === '100' ? '1fr' : w + '% 1fr');
+  const btnGroup = document.getElementById('imgwbtns-' + id);
+  if (btnGroup) btnGroup.querySelectorAll('button').forEach(btn => {
+    const active = btn.dataset.val === w;
+    btn.style.border = '1px solid ' + (active ? '#00c9a7' : 'var(--border)');
+    btn.style.background = active ? 'rgba(0,201,167,0.15)' : 'var(--bg2)';
+    btn.style.color = active ? '#00c9a7' : 'var(--muted)';
+  });
+  updatePreview();
+}
+
+function setMapBadgeSize(id, s) {
+  const b = editorBlocks.find(b => b.id === id);
+  if (!b) return;
+  b.data.mapBadgeSize = s;
+  const badge = document.getElementById('badge-' + id);
+  if (badge) { badge.style.width = s + 'px'; badge.style.height = s + 'px'; }
+  const rm = document.getElementById('badgermv-' + id);
+  if (rm) rm.style.bottom = (parseInt(s) + 22) + 'px';
+  const btnGroup = document.getElementById('badgebtns-' + id);
+  if (btnGroup) btnGroup.querySelectorAll('button').forEach(btn => {
+    const active = btn.dataset.val === s;
+    btn.style.border = '1px solid ' + (active ? '#00c9a7' : 'var(--border)');
+    btn.style.background = active ? 'rgba(0,201,167,0.15)' : 'var(--bg2)';
+    btn.style.color = active ? '#00c9a7' : 'var(--muted)';
+  });
+  updatePreview();
+}
+
+function updateLinkItem(blockId, index, key, value) {
+  const b = editorBlocks.find(b => b.id === blockId);
+  if (!b) return;
+  if (!b.data.items) b.data.items = [{}];
+  if (!b.data.items[index]) b.data.items[index] = {};
+  b.data.items[index][key] = value;
+  updatePreview();
+}
+
+function addLinkItem(blockId) {
+  const b = editorBlocks.find(b => b.id === blockId);
+  if (!b) return;
+  if (!b.data.items) b.data.items = [];
+  b.data.items.push({});
+  const list = document.getElementById('block-list');
+  list.innerHTML = '';
+  editorBlocks.forEach(x => renderBlock(x));
+  updatePreview();
+}
+
+function removeLinkItem(blockId, index) {
+  const b = editorBlocks.find(b => b.id === blockId);
+  if (!b || !b.data.items) return;
+  b.data.items.splice(index, 1);
+  const list = document.getElementById('block-list');
+  list.innerHTML = '';
+  editorBlocks.forEach(x => renderBlock(x));
+  updatePreview();
+}
+
+function updateRegionTab(blockId, index, value) {
+  const b = editorBlocks.find(b => b.id === blockId);
+  if (!b) return;
+  if (!b.data.buttons) b.data.buttons = [];
+  b.data.buttons[index] = value;
+  updatePreview();
+}
+function addRegionTab(blockId) {
+  const b = editorBlocks.find(b => b.id === blockId);
+  if (!b) return;
+  if (!b.data.buttons) b.data.buttons = [];
+  b.data.buttons.push('');
+  const list = document.getElementById('block-list');
+  const scrollPos = document.getElementById('editor-left')?.scrollTop || 0;
+  list.innerHTML = '';
+  editorBlocks.forEach(x => renderBlock(x));
+  if (document.getElementById('editor-left')) document.getElementById('editor-left').scrollTop = scrollPos;
+  updatePreview();
+}
+function removeRegionTab(blockId, index) {
+  const b = editorBlocks.find(b => b.id === blockId);
+  if (!b || !b.data.buttons) return;
+  b.data.buttons.splice(index, 1);
+  const list = document.getElementById('block-list');
+  list.innerHTML = '';
+  editorBlocks.forEach(x => renderBlock(x));
+  updatePreview();
+}
+
+function updateNavBtn(blockId, index, value) {
+  const b = editorBlocks.find(b => b.id === blockId);
+  if (!b) return;
+  if (!b.data.buttons) b.data.buttons = [];
+  b.data.buttons[index] = value;
+  updatePreview();
+}
+
+function addNavBtn(blockId) {
+  const b = editorBlocks.find(b => b.id === blockId);
+  if (!b) return;
+  if (!b.data.buttons) b.data.buttons = [];
+  b.data.buttons.push('');
+  // Re-render the block to show the new input
+  const list = document.getElementById('block-list');
+  list.innerHTML = '';
+  editorBlocks.forEach(x => renderBlock(x));
+  updatePreview();
+}
+
+function removeNavBtn(blockId, index) {
+  const b = editorBlocks.find(b => b.id === blockId);
+  if (!b || !b.data.buttons) return;
+  b.data.buttons.splice(index, 1);
+  const list = document.getElementById('block-list');
+  list.innerHTML = '';
+  editorBlocks.forEach(x => renderBlock(x));
+  updatePreview();
+}
+
+function deleteBlock(id) {
+  editorBlocks = editorBlocks.filter(b => b.id !== id);
+  document.querySelector(`[data-block-id="${id}"]`)?.remove();
+  updatePreview();
+}
+
+function moveBlock(id, dir) {
+  const idx = editorBlocks.findIndex(b => b.id === id);
+  if (idx < 0) return;
+  const ni = idx + dir;
+  if (ni < 0 || ni >= editorBlocks.length) return;
+  [editorBlocks[idx], editorBlocks[ni]] = [editorBlocks[ni], editorBlocks[idx]];
+  const list = document.getElementById('block-list');
+  list.innerHTML = '';
+  editorBlocks.forEach(b => renderBlock(b));
+  updatePreview();
+}
+
+// ── Image handling — file, drag & drop, paste ─────────────
+// ── Bulk photo upload ──────────────────────────────────────
+// Fills empty photo slots (img-text/image blocks with no src) in order;
+// any leftover files beyond available slots get their own new block
+// created automatically so nothing is ever silently dropped.
+async function handleBulkUpload(fileList){
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+
+  const emptySlots = editorBlocks.filter(b => (b.type === 'img-text' || b.type === 'image') && !b.data.src);
+
+  for (let i = 0; i < files.length; i++){
+    let targetId;
+    if (i < emptySlots.length){
+      targetId = emptySlots[i].id;
+    } else {
+      // Ran out of empty slots — create a fresh img-text block for this photo
+      addBlock('img-text', { text: '', imgWidth: '55' });
+      targetId = editorBlocks[editorBlocks.length - 1].id;
+    }
+    loadImageFile(targetId, files[i]);
+    await new Promise(r => setTimeout(r, 400)); // stagger uploads slightly
+  }
+  toast(`Distributing ${files.length} photo(s) into the guide...`);
+  document.getElementById('bulk-upload-input').value = '';
+}
+
+function handleFileSelect(blockId, input, field='src') {
+  if (!input.files[0]) return;
+  loadImageFile(blockId, input.files[0], field);
+}
+
+function handleDrop(blockId, e, field='src') {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) loadImageFile(blockId, file, field);
+}
+
+// Global paste listener — pastes image into the most recently active image block
+let lastImageBlockId = null;
+document.addEventListener('paste', (e) => {
+  const items = Array.from(e.clipboardData.items || []);
+  const imgItem = items.find(i => i.type.startsWith('image/'));
+  if (!imgItem) return;
+  e.preventDefault();
+  // Find the image block whose dropzone is focused/hovered, or the last one
+  const targetId = lastImageBlockId || editorBlocks.filter(b=>b.type==='image').slice(-1)[0]?.id;
+  if (!targetId) return;
+  loadImageFile(targetId, imgItem.getAsFile());
+});
+
+function loadImageFile(blockId, file, field='src') {
+  const reader = new FileReader();
+  reader.onload = async e => {
+    const b = editorBlocks.find(x => x.id === blockId);
+    if (!b) return;
+    const pane = document.getElementById('editor-left');
+    const scrollPos = pane ? pane.scrollTop : 0;
+
+    // Show uploading state immediately
+    b.data[field] = '__uploading__';
+    const list = document.getElementById('block-list');
+    list.innerHTML = '';
+    editorBlocks.forEach(x => renderBlock(x));
+    if (pane) pane.scrollTop = scrollPos;
+    // Upload to server immediately — retry up to 3 times for Render cold starts
+    const iso = document.getElementById('ge-iso').value.trim().toUpperCase() || 'guide';
+    let uploaded = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        // Update status on retry attempts
+        if (attempt > 1) {
+          const card = document.querySelector(`[data-block-id="${blockId}"]`);
+          if (card) {
+            const zone = card.querySelector(field==='mapSrc' ? '.map-badge-drop-zone' : '.img-drop-zone');
+            if (zone) zone.querySelector('div')?.childNodes[2] && (zone.querySelector('div').lastChild.textContent = `Waking server... attempt ${attempt}/3`);
+          }
+        }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 55000);
+        const res = await fetch(`${API}/admin/upload_guide_image`, {
+          method: 'POST',
+          headers: adminHeaders(),
+          body: JSON.stringify({ image: e.target.result, iso }),
+          signal: controller.signal
+        });
+        clearTimeout(timeout);
+        const data = await res.json();
+        if (data.url) {
+          b.data[field] = data.url;
+          uploaded = true;
+          toast('Image uploaded ✓');
+          break;
+        } else {
+          throw new Error(data.error || 'Upload failed');
+        }
+      } catch(err) {
+        if (attempt === 3) {
+          b.data[field] = '';
+          toast('Image upload failed after 3 attempts — check connection', true);
+        }
+        // Wait 2s before retrying
+        if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+
+    lastImageBlockId = blockId;
+    const listEl = document.getElementById('block-list');
+    listEl.innerHTML = '';
+    editorBlocks.forEach(x => renderBlock(x));
+    if (pane) pane.scrollTop = scrollPos;
+    updatePreview();
+  };
+  reader.readAsDataURL(file);
+}
+
+// Track which image block the user is hovering so paste goes to the right one
+document.addEventListener('mouseover', e => {
+  const zone = e.target.closest('.img-drop-zone');
+  if (zone) {
+    const card = zone.closest('[data-block-id]');
+    if (card) lastImageBlockId = parseInt(card.dataset.blockId);
+  }
+});
+
+// ── Live preview ──────────────────────────────────────────
+function updatePreview() {
+  const preview = document.getElementById('guide-preview');
+  if (!preview) return;
+  if (!editorBlocks.length) {
+    preview.innerHTML = '<div style="color:var(--muted);text-align:center;padding:60px 0;font-size:14px;">Add blocks on the left to see preview</div>';
+    return;
+  }
+  const country = document.getElementById('ge-country').value || 'Country';
+  const iso = document.getElementById('ge-iso').value.toUpperCase();
+  let html = `<div style="margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid #1e1e38;">
+    <div style="font-size:28px;font-weight:800;color:#e0e0f0;">${escapeHtml(country)}</div>
+    <div style="font-size:13px;color:#5a5a7a;margin-top:2px;">GeoGuessr Country Meta Guide</div>
+  </div>`;
+  editorBlocks.forEach((b, bIdx) => {
+    const prevAttach = bIdx > 0 && editorBlocks[bIdx-1].data && editorBlocks[bIdx-1].data.attachBelow;
+    const nextAttach = b.data && b.data.attachBelow && bIdx < editorBlocks.length - 1;
+    switch(b.type) {
+      case 'heading':
+        html += `<div class="prev-h2">${escapeHtml(b.data.text||'')}</div>`;
+        break;
+      case 'text':
+        if (b.data.text) html += `<div class="prev-p">${mdToHtml(b.data.text)}</div>`;
+        break;
+      case 'image':
+        if (b.data.src) html += `<img class="prev-img" src="${b.data.src}">`;
+        if (b.data.caption) html += `<div class="prev-cap">${escapeHtml(b.data.caption)}</div>`;
+        break;
+      case 'tip': {
+        const rTR = prevAttach ? '0' : '10px', rBR = nextAttach ? '0' : '10px';
+        const mt = prevAttach ? '0' : '14px', mb = nextAttach ? '0' : '14px';
+        html += `<div class="prev-tip" style="border-radius:0 ${rTR} ${rBR} 0;margin:${mt} 0 ${mb};"><div class="prev-tip-label">💡 Tip</div><div class="prev-p" style="margin:0">${mdToHtml(b.data.text||'')}</div></div>`;
+        break;
+      }
+      case 'warning': {
+        const rTR = prevAttach ? '0' : '10px', rBR = nextAttach ? '0' : '10px';
+        const mt = prevAttach ? '0' : '14px', mb = nextAttach ? '0' : '14px';
+        html += `<div class="prev-warn" style="border-radius:0 ${rTR} ${rBR} 0;margin:${mt} 0 ${mb};"><div class="prev-warn-label">⚠️ Easy to Confuse With</div><div class="prev-p" style="margin:0">${mdToHtml(b.data.text||'')}</div></div>`;
+        break;
+      }
+      case 'divider':
+        html += `<hr style="border:none;border-top:1px solid #1e1e38;margin:20px 0;">`;
+        break;
+      case 'spacer':
+        html += `<div style="height:${b.data.height||32}px;"></div>`;
+        break;
+      case 'img-text': {
+        const itW = b.data.imgWidth || '55';
+        const itMapSrc = b.data.mapSrc && b.data.mapSrc !== '__uploading__' ? b.data.mapSrc : null;
+        const itMapSz = b.data.mapBadgeSize || '110';
+        const mt = prevAttach ? '0' : '14px', mb = nextAttach ? '0' : '14px';
+        html += `<div style="display:grid;grid-template-columns:${itW==='100'?'1fr':itW+'% 1fr'};gap:18px;align-items:start;margin:${mt} 0 ${mb};">
+          <div>
+            <div style="position:relative;">
+              ${b.data.src ? `<img src="${b.data.src}" style="width:100%;height:auto;display:block;border-radius:8px;">` : '<div style="background:#1a1a2e;border-radius:8px;height:120px;display:flex;align-items:center;justify-content:center;color:#3a3a5a;font-size:12px;">Image</div>'}
+            </div>
+          ${b.data.caption ? `<div style="text-align:center;font-size:11px;color:#5a5a7a;margin-top:4px;">${escapeHtml(b.data.caption)}</div>` : ''}
+          ${itMapSrc ? `<img src="${itMapSrc}" style="width:${itMapSz}px;max-width:100%;display:block;margin:8px auto 0;border-radius:6px;filter:drop-shadow(0 2px 8px rgba(0,0,0,0.4));">` : ''}
+          </div>
+          <div class="prev-p" style="margin:0">${mdToHtml(b.data.text||'')}</div>
+        </div>`;
+        break;
+      }
+      case 'two-col': {
+        const r = (prevAttach || nextAttach) ? (prevAttach && nextAttach ? '0' : prevAttach ? '0 0 10px 10px' : '10px 10px 0 0') : '10px';
+        const mt = prevAttach ? '0' : '12px', mb = nextAttach ? '0' : '12px';
+        html += `<div class="prev-2col" style="margin:${mt} 0 ${mb};"><div class="prev-2col-cell prev-p" style="margin:0;border-radius:${r};">${mdToHtml(b.data.left||'')}</div><div class="prev-2col-cell prev-p" style="margin:0;border-radius:${r};">${mdToHtml(b.data.right||'')}</div></div>`;
+        break;
+      }
+      case 'links':
+        const litems = (b.data.items || []).filter(x => x.label);
+        if (litems.length) {
+          html += `<ul style="padding-left:0;list-style:none;margin:12px 0;">
+            ${litems.map(item => `
+              <li style="display:flex;gap:8px;align-items:baseline;margin-bottom:10px;font-size:14px;color:#c0c0d8;">
+                <span style="color:#00c9a7;flex-shrink:0;">•</span>
+                <span>
+                  <strong style="color:#e0e0f0;">${escapeHtml(item.label)}</strong>
+                  ${item.url ? ` <span style="color:#7c3aed;font-size:12px;">(link)</span>` : ''}
+                  ${item.desc ? ` — ${escapeHtml(item.desc)}` : ''}
+                </span>
+              </li>`).join('')}
+          </ul>`;
+        }
+        break;
+      case 'region-tabs':
+        const rtPreview = (b.data.buttons || []).filter(x => x && x.trim());
+        if (rtPreview.length) {
+          html += `<div style="display:flex;flex-wrap:wrap;gap:8px;margin:20px 0;padding:16px;background:rgba(124,58,237,0.06);border:1px solid rgba(124,58,237,0.2);border-radius:12px;">
+            <span style="font-size:11px;color:#7c3aed;font-weight:700;text-transform:uppercase;letter-spacing:.5px;width:100%;margin-bottom:6px;">Regions</span>
+            ${rtPreview.map(label => `<div style="background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.3);color:#a78bfa;padding:8px 16px;border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;">${escapeHtml(label)}</div>`).join('')}
+          </div>`;
+        }
+        break;
+      case 'nav': {
+        const navBtnsPreview = (b.data.buttons || []).filter(x => x && x.trim());
+        if (navBtnsPreview.length) {
+          html += `<div style="display:flex;flex-wrap:wrap;gap:10px;margin:16px 0 24px;">
+            ${navBtnsPreview.map(label => `<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:30px;padding:13px 28px;font-size:15px;font-weight:700;color:#c0c0d8;cursor:pointer;letter-spacing:.3px;">${escapeHtml(label)}</div>`).join('')}
+          </div>`;
+        }
+        break;
+      }
+    }
+  });
+  preview.innerHTML = html;
+}
+
+// ── Save ──────────────────────────────────────────────────
+async function saveGuide() {
+  const country = document.getElementById('ge-country').value.trim();
+  const iso = document.getElementById('ge-iso').value.trim().toUpperCase();
+  if (!country || !iso || iso.length !== 2) { toast('Country name and 2-letter ISO code required', true); return; }
+  if (!editorBlocks.length) { toast('Add at least one block', true); return; }
+  const content = { blocks: editorBlocks.map(b => ({ type: b.type, data: b.data })) };
+  try {
+    const res = await fetch(`${API}/admin/country_meta`, {
+      method:'POST', headers: adminHeaders(),
+      body: JSON.stringify({country, iso, content})
+    });
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    toast(`Guide for ${country} saved!`);
+    closeGuideEditor();
+    loadGuides();
+  } catch(e) {
+    toast('Save failed: ' + e.message, true);
+  }
+}
+function formatDateTime(str) {
+  if (!str || str === 'None') return '—';
+  try {
+    const d = new Date(str);
+    return d.toLocaleDateString('en-GB', {day:'numeric', month:'short'}) + ' ' +
+           d.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+  } catch { return str; }
+}
+
+function formatDate(str) {
+  if (!str || str === 'None') return '—';
+  try { return new Date(str).toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric'}); }
+  catch { return str; }
+}
+
+function toast(msg, isError) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.borderColor = isError ? '#ff6b6b' : '#00c9a7';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+</script>
+</body>
+</html>
