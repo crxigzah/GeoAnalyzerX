@@ -185,6 +185,7 @@ def init_db():
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS quality_checked_at TIMESTAMPTZ")
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS quality_reason TEXT")
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS camera_generation TEXT")
+            conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS captured_year TEXT")
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS flagged_suspicious BOOLEAN DEFAULT FALSE")
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS suspicious_reason TEXT")
         except: pass
@@ -2011,102 +2012,6 @@ def forms_submit():
 
     return jsonify({"success": True})
 
-def ai_estimate_camera_generation(image_b64, country=None):
-    """Standalone camera-generation classifier, deliberately separate from
-    ai_check_scene_quality(). A combined prompt asking for quality AND
-    generation in one call turned out to be unreliable — cramming two
-    different judgments into one response made the model's GENERATION
-    line inconsistent enough that a large admin batch came back almost
-    entirely 'unknown'. A single-purpose prompt is much more reliable,
-    matching the same lesson learned earlier with the quality checker
-    itself. This never touches quality_score — camera generation is a
-    label, not a pass/fail judgment. A genuinely well-composed gen-1
-    photo should still pass quality fine; a badly-angled gen-4 photo
-    should still fail it.
-
-    Accepts an optional country — unlike the quality checker (where a
-    country-level signal was too coarse, since camera generation varies
-    by REGION within a country), Gen 1 specifically is documented as
-    genuinely rare and geographically restricted to only the US,
-    Australia, and New Zealand — a country-level fact that's actually
-    useful here to rule out false Gen 1 guesses elsewhere. Returns
-    (generation, raw_response)."""
-    import requests as req
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not anthropic_key:
-        return "unknown", "validation skipped"
-    gen1_note = ""
-    if country and country not in ("United States", "Australia", "New Zealand"):
-        gen1_note = (
-            f"\n\nNOTE: this image is from {country}. Gen 1 coverage is rare and has only ever "
-            f"been documented in the US, Australia, and New Zealand — since this isn't one of "
-            f"those three, Gen 1 should essentially never be your answer here, even if the image "
-            f"looks low quality (that's more likely ordinary blur or low resolution unrelated to "
-            f"camera generation, not genuine Gen 1 hardware)."
-        )
-    try:
-        resp = req.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": anthropic_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 150,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
-                        {"type": "text", "text": (
-                            "What Google Street View camera generation was this GeoGuessr "
-                            "screenshot most likely captured with? Only try to identify the "
-                            "specific, reliably-recognizable categories below — everything else "
-                            "just gets grouped as 'other', no need to guess further than that.\n\n"
-                            "GEN 1 (2007-2009): Low quality with a consistently soft, slightly hazy "
-                            "look spread evenly across the WHOLE frame — not sharp or crisp anywhere "
-                            "in the image, often with visible compression artifacts. The scene is "
-                            "usually still interpretable (you can tell it's a road, trees, hills, "
-                            "etc.) — it doesn't need to be so extreme that nothing is recognizable "
-                            "at all, just genuinely and consistently lower-resolution/soft-focus "
-                            "throughout, unlike the crisp, sharp look of modern coverage. Also "
-                            "rare — documented as only ever appearing in the US, Australia, and "
-                            "New Zealand.\n"
-                            "GEN 2 (2008-2011): Two possible tells — a distinctive 'halo' (a visible "
-                            "lens flare specifically around the sun), AND/OR a circular purplish "
-                            "blur around the car visible when looking down toward the ground. "
-                            "Either one alone is a strong signal.\n"
-                            "TREKKER / unofficial coverage (2019+): A large blurry circle specifically "
-                            "at the BOTTOM of the frame only (no halo around the sun), often with an "
-                            "odd, lower-resolution look overall.\n"
-                            "OTHER: any normal-looking Street View coverage that doesn't clearly "
-                            "match Gen 1, Gen 2, or Trekker above — this covers the vast majority of "
-                            "modern coverage. Don't try to further distinguish sharpness/quality "
-                            "level within this category.\n\n"
-                            "This is a genuine best-effort estimate, not a certainty — if you can't "
-                            "even confidently tell OTHER apart from something being wrong with the "
-                            "image itself, say 'unknown'." + gen1_note + "\n\n"
-                            "Respond in EXACTLY this format, nothing else:\n"
-                            "THINK: [one short sentence on the specific visual evidence you're using]\n"
-                            "GENERATION: 1, 2, trekker, other, or unknown"
-                        )}
-                    ]
-                }]
-            },
-            timeout=10
-        )
-        raw = resp.json().get("content", [{}])[0].get("text", "").strip()
-        gen_line = next((l for l in raw.split('\n') if l.upper().startswith('GENERATION:')), '')
-        generation = gen_line.split(':', 1)[1].strip().lower() if gen_line else 'unknown'
-        if generation not in ('1', '2', 'trekker', 'other'):
-            generation = 'unknown'
-        print(f"GeoAnalyzerX: camera generation estimate — generation={generation} | raw response: {raw!r}")
-        return generation, raw
-    except Exception as e:
-        print("Camera generation check error:", e)
-        return "unknown", "validation error"
-
 def ai_check_scene_quality(image_b64, country=None):
     """Uses Claude to check if an image is a genuine outdoor Street-View-style
     scene, to keep the community library free of junk (selfies, screenshots
@@ -2323,18 +2228,11 @@ def upload_scene():
     # cost the user one of their free uploads for the day.
     scene_ok, scene_reason, scene_suspicious, scene_suspicious_reason = ai_check_scene_quality(image_b64, country=country)
 
-    # Separate, focused camera-generation estimate — run regardless of
-    # pass/fail (previously this only ran on a PASS, since it sat after
-    # an early-return on failure, so a failed capture never got a
-    # generation label to show back to the player at all).
-    scene_generation, _ = ai_estimate_camera_generation(image_b64, country=country)
-
     if not scene_ok:
         return jsonify({
             "error": "This doesn't look like a Street View scene, so it wasn't added to the library.",
             "code": "low_quality",
             "reason": scene_reason,
-            "generation": scene_generation,
             "passed": False,
             "uploaded": False
         }), 400
@@ -2375,20 +2273,20 @@ def upload_scene():
     try:
         conn = get_db()
         conn.run("""INSERT INTO scenes (country, state, region, lat, lng, r2_key, contributor_user_id,
-                quality_score, quality_checked_at, quality_reason, camera_generation,
+                quality_score, quality_checked_at, quality_reason,
                 flagged_suspicious, suspicious_reason)
             VALUES (:country, :state, :region, :lat, :lng, :key, :cid,
-                :qscore, NOW(), :qreason, :gen, :susp, :suspreason)""",
+                :qscore, NOW(), :qreason, :susp, :suspreason)""",
             country=country, state=state, region=region,
             lat=lat, lng=lng, key=r2_key, cid=contributor_id,
-            qscore=1 if scene_ok else 0, qreason=scene_reason, gen=scene_generation,
+            qscore=1 if scene_ok else 0, qreason=scene_reason,
             susp=scene_suspicious, suspreason=scene_suspicious_reason)
         conn.close()
     except Exception as e:
         return safe_error(e)
 
     log_event("scene_upload", user_id=user_id, username=username, detail=f"country={country} state={state} region={region}", ip=client_ip())
-    return jsonify({"uploaded": True, "region": region, "key": r2_key, "generation": scene_generation, "passed": True, "suspicious": scene_suspicious})
+    return jsonify({"uploaded": True, "region": region, "key": r2_key, "passed": True, "suspicious": scene_suspicious})
 
 MAPILLARY_TOKEN = os.environ.get("MAPILLARY_ACCESS_TOKEN", "")
 
@@ -2573,7 +2471,6 @@ def admin_scenes_list():
     date_to   = request.args.get("date_to", "")
     country   = request.args.get("country", "")
     quality   = request.args.get("quality", "all")  # all | unchecked | passed | failed
-    generation = request.args.get("generation", "")  # "", 1, 2, 3, 4, trekker, unknown
     sort      = request.args.get("sort", "newest")  # newest | oldest | quality_desc | quality_asc
     limit     = min(int(request.args.get("limit", 60) or 60), 200)
     offset    = int(request.args.get("offset", 0) or 0)
@@ -2597,9 +2494,6 @@ def admin_scenes_list():
         where.append("quality_checked_at IS NOT NULL AND quality_score = 0")
     elif quality == "suspicious":
         where.append("flagged_suspicious = TRUE")
-    if generation:
-        where.append("camera_generation = :generation")
-        params["generation"] = generation
 
     order = {
         "newest": "uploaded_at DESC",
@@ -2615,7 +2509,7 @@ def admin_scenes_list():
         total = total_row[0][0] if total_row else 0
         rows = conn.run(f"""SELECT s.id, s.country, s.state, s.region, s.r2_key, s.quality_score,
                 s.quality_checked_at, s.quality_reason, s.times_used, s.uploaded_at,
-                s.contributor_user_id, u.username, s.camera_generation,
+                s.contributor_user_id, u.username,
                 s.flagged_suspicious, s.suspicious_reason
             FROM scenes s
             LEFT JOIN users u ON u.id::TEXT = s.contributor_user_id
@@ -2629,7 +2523,7 @@ def admin_scenes_list():
             "quality_score": r[5], "quality_checked_at": str(r[6]) if r[6] else None,
             "quality_reason": r[7], "times_used": r[8], "uploaded_at": str(r[9]),
             "contributor_user_id": r[10], "contributor_username": r[11] or ("Unknown (deleted account)" if r[10] else "Anonymous"),
-            "camera_generation": r[12], "flagged_suspicious": r[13], "suspicious_reason": r[14],
+            "flagged_suspicious": r[12], "suspicious_reason": r[13],
         } for r in rows]
         return jsonify({"scenes": scenes, "total": total, "limit": limit, "offset": offset})
     except Exception as e:
@@ -2705,57 +2599,6 @@ def admin_scenes_recheck_quality():
     except Exception as e:
         return safe_error(e)
 
-@app.route("/admin/scenes/categorize_generation", methods=["POST","OPTIONS"])
-def admin_scenes_categorize_generation():
-    """Labels camera generation ONLY — genuinely separate from quality
-    checking, using its own focused prompt (ai_estimate_camera_generation)
-    rather than the combined one that turned out unreliable. Never
-    touches quality_score/quality_checked_at, so running this doesn't
-    flag anything for quality — a scene from a country/region only
-    covered by gen-1 imagery gets correctly labeled 'Gen 1' without that
-    being treated as a quality problem. Either a specific scene_ids
-    list, or a batch of scenes with no generation label yet."""
-    if request.method == "OPTIONS": return jsonify({}), 200
-    ok, err = require_admin()
-    if not ok: return err
-
-    d = request.json or {}
-    scene_ids = d.get("scene_ids") or []
-    batch_uncategorized = bool(d.get("uncategorized_only"))
-    batch_limit = min(int(d.get("limit") or 20), 10)
-
-    try:
-        conn = get_db()
-        if scene_ids:
-            rows = conn.run("SELECT id, r2_key, country FROM scenes WHERE id = ANY(:ids)", ids=scene_ids)
-        elif batch_uncategorized:
-            rows = conn.run("""SELECT id, r2_key, country FROM scenes
-                WHERE camera_generation IS NULL
-                ORDER BY uploaded_at ASC LIMIT :lim""", lim=batch_limit)
-        else:
-            conn.close()
-            return jsonify({"error": "Provide scene_ids or uncategorized_only"}), 400
-
-        results = []
-        for scene_id, r2_key, scene_country in rows:
-            b64 = get_storage_image_b64(r2_key)
-            if not b64:
-                results.append({"id": str(scene_id), "checked": False, "reason": "could not fetch image"})
-                continue
-            generation, raw = ai_estimate_camera_generation(b64, country=scene_country)
-            conn.run("UPDATE scenes SET camera_generation=:gen WHERE id=:id", gen=generation, id=scene_id)
-            results.append({"id": str(scene_id), "checked": True, "generation": generation})
-        conn.close()
-
-        by_gen = {}
-        for r in results:
-            if r.get("checked"):
-                by_gen[r["generation"]] = by_gen.get(r["generation"], 0) + 1
-        return jsonify({"results": results, "checked": len(results), "by_generation": by_gen})
-    except Exception as e:
-        return safe_error(e)
-
-@app.route("/admin/scenes/manual_pass_bulk", methods=["POST","OPTIONS"])
 def admin_scenes_manual_pass_bulk():
     """Bulk version of the manual-pass override — a specific scene_ids
     list (from the Scene Library's checkbox multi-select), all_failed=
@@ -2819,7 +2662,7 @@ def admin_scenes_clear_suspicious(scene_id):
 def admin_scenes_manual_pass(scene_id):
     """Lets an admin manually override a quality result to Passed —
     for cases where the AI checker got it wrong on a genuinely good
-    photo. Does not touch camera_generation."""
+    photo."""
     if request.method == "OPTIONS": return jsonify({}), 200
     ok, err = require_admin()
     if not ok: return err
