@@ -2199,6 +2199,13 @@ def ai_check_scene_quality(image_b64, country=None):
                             "blank/black frame, or an extreme macro-style close-up with no context "
                             "at all. GeoGuessr's OWN normal compass strip, round/score display, "
                             "zoom controls, and logo are all fine regardless.\n\n"
+                            "CONSISTENCY IS MANDATORY: your ANSWER must directly follow from what "
+                            "you wrote in THINK. If your THINK reasoning does not explicitly name "
+                            "one of the specific problems above (expanded map, third-party overlay, "
+                            "camera pitched down at the ground, genuine motion-blur streaking, or "
+                            "not a real outdoor scene) — meaning everything you described sounds "
+                            "fine — your ANSWER must be YES. Do not answer NO unless your THINK "
+                            "text explicitly identifies which specific rule was violated.\n\n"
                             "Respond in EXACTLY this format, nothing else:\n"
                             "THINK: [one short sentence on what you actually see]\n"
                             "ANSWER: YES or NO"
@@ -2211,11 +2218,16 @@ def ai_check_scene_quality(image_b64, country=None):
         raw = resp.json().get("content", [{}])[0].get("text", "").strip()
         answer_line = next((l for l in raw.split('\n') if l.upper().startswith('ANSWER:')), raw)
         passed = 'YES' in answer_line.upper()
+        # Store/display just the reasoning sentence, not the raw
+        # "THINK: ..." / "ANSWER: ..." formatting — cleaner for an
+        # admin glancing at a card in the Scene Library.
+        think_line = next((l for l in raw.split('\n') if l.upper().startswith('THINK:')), raw)
+        clean_reason = think_line.split(':', 1)[1].strip() if ':' in think_line else think_line
         print(f"GeoAnalyzerX: scene quality check — passed={passed} | raw response: {raw!r}")
-        return passed, raw
+        return passed, clean_reason
     except Exception as e:
         print("Scene quality check error:", e)
-        return True, "validation error — allowing", "unknown"
+        return True, "validation error — allowing"
 
 @app.route("/scenes/validate", methods=["POST", "OPTIONS"])
 def validate_scene():
