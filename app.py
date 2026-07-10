@@ -449,7 +449,11 @@ def get_storage_image_b64(key: str):
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code == 200:
             return base64.b64encode(resp.content).decode()
-        print(f"Storage fetch failed: {resp.status_code}")
+        # Log the raw key and the actual response body, not just the
+        # status code — Supabase usually returns a specific error
+        # message (e.g. "Invalid key", "Object not found") in the body
+        # that tells us exactly what's wrong, rather than just "400".
+        print(f"Storage fetch failed: {resp.status_code} | raw_key={key!r} | url={url!r} | body={resp.text[:300]!r}")
         return None
     except Exception as e:
         print("Storage fetch error:", e)
@@ -2599,7 +2603,20 @@ def admin_scenes_recheck_quality():
         for scene_id, r2_key, scene_country in rows:
             b64 = get_storage_image_b64(r2_key)
             if not b64:
-                results.append({"id": str(scene_id), "checked": False, "reason": "could not fetch image from storage"})
+                # Previously this just "continue"d without marking the row
+                # as checked, meaning a batch of broken links (a bad
+                # storage reference, not a code bug) would get pulled
+                # again on every subsequent run, since ORDER BY
+                # uploaded_at ASC always grabs the oldest UNCHECKED rows
+                # first — permanently blocking the rest of the backlog
+                # behind whatever's broken at the front of the queue.
+                # Treating a broken link as a quality failure (which,
+                # functionally, it is — it can't be used either way) lets
+                # the batch actually move past it.
+                conn.run("""UPDATE scenes SET quality_score=0, quality_checked_at=NOW(),
+                        quality_reason=:reason WHERE id=:id""",
+                    reason="Could not fetch image from storage (broken link)", id=scene_id)
+                results.append({"id": str(scene_id), "checked": True, "passed": False, "reason": "could not fetch image from storage", "fetch_failed": True})
                 continue
             passed, reason = ai_check_scene_quality(b64, country=scene_country)
             conn.run("""UPDATE scenes SET quality_score=:score, quality_checked_at=NOW(), quality_reason=:reason
@@ -2608,17 +2625,12 @@ def admin_scenes_recheck_quality():
         conn.close()
 
         passed_count = sum(1 for r in results if r.get("passed"))
-        failed_count = sum(1 for r in results if r.get("checked") and not r.get("passed"))
-        fetch_failed_count = sum(1 for r in results if not r.get("checked"))
+        failed_count = sum(1 for r in results if r.get("checked") and not r.get("passed") and not r.get("fetch_failed"))
+        fetch_failed_count = sum(1 for r in results if r.get("fetch_failed"))
         return jsonify({
             "results": results,
             "attempted": len(results),
-            # "checked" now means genuinely evaluated (passed+failed) —
-            # previously this counted every row pulled from the DB even
-            # when the actual image couldn't be fetched from storage,
-            # which silently made attempted/checked counts not add up
-            # against passed+failed in the admin panel.
-            "checked": passed_count + failed_count,
+            "checked": len(results),
             "passed": passed_count,
             "failed": failed_count,
             "fetch_failed": fetch_failed_count,
