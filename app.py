@@ -6,7 +6,7 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import hashlib, os, secrets, uuid, base64, io, time, threading, re, math, queue, json as _json, random, datetime
 import pg8000.native
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 app = Flask(__name__)
 # Caps total request body size (generous for a base64-encoded screenshot,
@@ -392,6 +392,18 @@ SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")  # service role key
 STORAGE_BUCKET     = "scenes"
 
+def storage_url_key(key: str) -> str:
+    """URL-encodes a storage key/path for safe use in a Supabase Storage
+    request URL, preserving '/' as path separators (encoding those to
+    %2F would break the folder structure). Storage keys are commonly
+    built from country/state/region names that contain spaces (e.g.
+    "New Zealand/Auckland/southeast/uuid.jpg") — without this, those
+    spaces (and any other special characters) go straight into the URL
+    unescaped, which Supabase's Storage API rejects outright with a
+    400 Bad Request. This was silently breaking image fetches for the
+    AI quality checker across a large chunk of the library."""
+    return quote(key, safe='/')
+
 def upload_to_storage(image_b64: str, country: str, state: str, region: str):
     """Upload image to Supabase Storage."""
     try:
@@ -412,7 +424,7 @@ def upload_to_storage(image_b64: str, country: str, state: str, region: str):
             return s or default
 
         key = f"{safe_segment(country,'unknown')}/{safe_segment(state,'unknown')}/{safe_segment(region,'central')}/{uuid.uuid4()}.jpg"
-        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{key}"
+        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{storage_url_key(key)}"
         headers = {
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": "image/jpeg",
@@ -432,7 +444,7 @@ def get_storage_image_b64(key: str):
     """Fetch image from Supabase Storage."""
     try:
         import requests
-        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{key}"
+        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{storage_url_key(key)}"
         headers = {"Authorization": f"Bearer {SUPABASE_KEY}"}
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code == 200:
@@ -1993,7 +2005,7 @@ def forms_submit():
 
     return jsonify({"success": True})
 
-def ai_estimate_camera_generation(image_b64):
+def ai_estimate_camera_generation(image_b64, country=None):
     """Standalone camera-generation classifier, deliberately separate from
     ai_check_scene_quality(). A combined prompt asking for quality AND
     generation in one call turned out to be unreliable — cramming two
@@ -2004,11 +2016,28 @@ def ai_estimate_camera_generation(image_b64):
     itself. This never touches quality_score — camera generation is a
     label, not a pass/fail judgment. A genuinely well-composed gen-1
     photo should still pass quality fine; a badly-angled gen-4 photo
-    should still fail it. Returns (generation, raw_response)."""
+    should still fail it.
+
+    Accepts an optional country — unlike the quality checker (where a
+    country-level signal was too coarse, since camera generation varies
+    by REGION within a country), Gen 1 specifically is documented as
+    genuinely rare and geographically restricted to only the US,
+    Australia, and New Zealand — a country-level fact that's actually
+    useful here to rule out false Gen 1 guesses elsewhere. Returns
+    (generation, raw_response)."""
     import requests as req
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not anthropic_key:
         return "unknown", "validation skipped"
+    gen1_note = ""
+    if country and country not in ("United States", "Australia", "New Zealand"):
+        gen1_note = (
+            f"\n\nNOTE: this image is from {country}. Gen 1 coverage is rare and has only ever "
+            f"been documented in the US, Australia, and New Zealand — since this isn't one of "
+            f"those three, Gen 1 should essentially never be your answer here, even if the image "
+            f"looks low quality (that's more likely ordinary blur or low resolution unrelated to "
+            f"camera generation, not genuine Gen 1 hardware)."
+        )
     try:
         resp = req.post(
             "https://api.anthropic.com/v1/messages",
@@ -2019,23 +2048,41 @@ def ai_estimate_camera_generation(image_b64):
             },
             json={
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 60,
+                "max_tokens": 70,
                 "messages": [{
                     "role": "user",
                     "content": [
                         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
                         {"type": "text", "text": (
                             "What Google Street View camera generation was this GeoGuessr "
-                            "screenshot most likely captured with? Base this on documented "
-                            "visual characteristics the GeoGuessr community actually uses: "
-                            "stitching pattern and seams, camera mounting height, resolution "
-                            "and sharpness, color balance, sun-glare/lens-flare artifacts, "
-                            "presence of a visible car hood or trekker backpack mount, and "
-                            "overall image quality typical of each generation. This is a "
-                            "genuine best-effort estimate, not a certainty — if you truly "
-                            "cannot tell, say 'unknown' rather than guessing randomly.\n\n"
+                            "screenshot most likely captured with? Use these concrete, specific "
+                            "visual signatures the GeoGuessr community actually relies on — check "
+                            "for these BEFORE falling back to a general resolution/quality guess:\n\n"
+                            "GEN 1 (2007-2009): Genuinely very low quality — often described as "
+                            "'potato' quality, with visible compression artifacts. Hard to make out "
+                            "real detail anywhere in the frame, not just soft in one area. Also "
+                            "rare — documented as only ever appearing in the US, Australia, and "
+                            "New Zealand.\n"
+                            "GEN 2 (2008-2011): Two possible tells — a distinctive 'halo' (a visible "
+                            "lens flare specifically around the sun), AND/OR a circular purplish "
+                            "blur around the car visible when looking down toward the ground. "
+                            "Either one alone is a strong signal. Overall quality is still fairly "
+                            "low, better than Gen 1 but noticeably rougher than Gen 3.\n"
+                            "GEN 3 (2011-2019): The standard, unremarkable camera — good clear "
+                            "resolution with readable text/signage, natural colors, no halo or "
+                            "circular artifacts, no unusual exposure. If nothing distinctive from "
+                            "the other generations is present and it just looks like a normal "
+                            "clear photo, this is the most likely answer, not a coin-flip default.\n"
+                            "GEN 4 (2017-present): High quality with noticeably vivid/saturated "
+                            "colors and often visibly higher exposure/brightness than a Gen 3 shot.\n"
+                            "TREKKER / unofficial coverage (2019+): A large blurry circle specifically "
+                            "at the BOTTOM of the frame only (no halo around the sun), often with an "
+                            "odd, lower-resolution look overall.\n\n"
+                            "This is a genuine best-effort estimate, not a certainty — if none of "
+                            "these signatures clearly match, say 'unknown' rather than guessing "
+                            "randomly." + gen1_note + "\n\n"
                             "Respond in EXACTLY this format, nothing else:\n"
-                            "THINK: [one short sentence on the visual evidence you're using]\n"
+                            "THINK: [one short sentence on the specific visual evidence you're using]\n"
                             "GENERATION: 1, 2, 3, 4, trekker, or unknown"
                         )}
                     ]
@@ -2221,7 +2268,7 @@ def upload_scene():
     # pass/fail (previously this only ran on a PASS, since it sat after
     # an early-return on failure, so a failed capture never got a
     # generation label to show back to the player at all).
-    scene_generation, _ = ai_estimate_camera_generation(image_b64)
+    scene_generation, _ = ai_estimate_camera_generation(image_b64, country=country)
 
     if not scene_ok:
         return jsonify({
@@ -2446,7 +2493,7 @@ def scene_count():
         return safe_error(e)
 
 def scene_public_url(r2_key):
-    return f"{SUPABASE_URL}/storage/v1/object/public/{STORAGE_BUCKET}/{r2_key}"
+    return f"{SUPABASE_URL}/storage/v1/object/public/{STORAGE_BUCKET}/{storage_url_key(r2_key)}"
 
 @app.route("/admin/scenes/list", methods=["GET","OPTIONS"])
 def admin_scenes_list():
@@ -2601,9 +2648,9 @@ def admin_scenes_categorize_generation():
     try:
         conn = get_db()
         if scene_ids:
-            rows = conn.run("SELECT id, r2_key FROM scenes WHERE id = ANY(:ids)", ids=scene_ids)
+            rows = conn.run("SELECT id, r2_key, country FROM scenes WHERE id = ANY(:ids)", ids=scene_ids)
         elif batch_uncategorized:
-            rows = conn.run("""SELECT id, r2_key FROM scenes
+            rows = conn.run("""SELECT id, r2_key, country FROM scenes
                 WHERE camera_generation IS NULL
                 ORDER BY uploaded_at ASC LIMIT :lim""", lim=batch_limit)
         else:
@@ -2611,12 +2658,12 @@ def admin_scenes_categorize_generation():
             return jsonify({"error": "Provide scene_ids or uncategorized_only"}), 400
 
         results = []
-        for scene_id, r2_key in rows:
+        for scene_id, r2_key, scene_country in rows:
             b64 = get_storage_image_b64(r2_key)
             if not b64:
                 results.append({"id": str(scene_id), "checked": False, "reason": "could not fetch image"})
                 continue
-            generation, raw = ai_estimate_camera_generation(b64)
+            generation, raw = ai_estimate_camera_generation(b64, country=scene_country)
             conn.run("UPDATE scenes SET camera_generation=:gen WHERE id=:id", gen=generation, id=scene_id)
             results.append({"id": str(scene_id), "checked": True, "generation": generation})
         conn.close()
@@ -2645,7 +2692,7 @@ def admin_scenes_delete(scene_id):
         conn.close()
         try:
             import requests
-            del_url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{r2_key}"
+            del_url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{storage_url_key(r2_key)}"
             requests.delete(del_url, headers={"Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=15)
         except Exception as e:
             print("Storage delete error (row already removed):", e)
@@ -3014,7 +3061,7 @@ def admin_upload_guide_image():
             ext = "jpg"
         img_bytes = base64.b64decode(image_b64)
         r2_key = f"meta-guides/{iso}/{uuid.uuid4()}.{ext}"
-        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{r2_key}"
+        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{storage_url_key(r2_key)}"
         resp = http_requests.post(
             upload_url,
             headers={
@@ -3027,7 +3074,7 @@ def admin_upload_guide_image():
         )
         if resp.status_code not in (200, 201):
             return jsonify({"error": f"Storage upload failed: {resp.status_code}"}), 500
-        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{r2_key}"
+        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{storage_url_key(r2_key)}"
         return jsonify({"url": url})
     except Exception as e:
         return safe_error(e)
@@ -3081,7 +3128,7 @@ def admin_camera_quiz_upload():
             ext = "jpg"
         img_bytes = base64.b64decode(image_b64)
         r2_key = f"camera-quiz/{uuid.uuid4()}.{ext}"
-        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{r2_key}"
+        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{storage_url_key(r2_key)}"
         resp = http_requests.post(
             upload_url,
             headers={
@@ -3094,7 +3141,7 @@ def admin_camera_quiz_upload():
         )
         if resp.status_code not in (200, 201):
             return jsonify({"error": f"Storage upload failed: {resp.status_code}"}), 500
-        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{r2_key}"
+        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{storage_url_key(r2_key)}"
 
         conn = get_db()
         conn.run("""INSERT INTO camera_quiz_images (image_url, correct_gen)
@@ -3180,7 +3227,7 @@ def admin_photo_quiz_upload():
             ext = "jpg"
         img_bytes = base64.b64decode(image_b64)
         r2_key = f"photo-quiz/{quiz_type}/{uuid.uuid4()}.{ext}"
-        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{r2_key}"
+        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{storage_url_key(r2_key)}"
         resp = http_requests.post(
             upload_url,
             headers={
@@ -3193,7 +3240,7 @@ def admin_photo_quiz_upload():
         )
         if resp.status_code not in (200, 201):
             return jsonify({"error": f"Storage upload failed: {resp.status_code}"}), 500
-        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{r2_key}"
+        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{storage_url_key(r2_key)}"
 
         conn = get_db()
         conn.run("""INSERT INTO photo_quiz_images (quiz_type, image_url, correct_country)
