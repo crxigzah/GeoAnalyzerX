@@ -2095,12 +2095,17 @@ def ai_estimate_camera_generation(image_b64, country=None):
                             "TREKKER / unofficial coverage (2019+): A large blurry circle specifically "
                             "at the BOTTOM of the frame only (no halo around the sun), often with an "
                             "odd, lower-resolution look overall.\n\n"
-                            "This is a genuine best-effort estimate, not a certainty — if none of "
-                            "these signatures clearly match, say 'unknown' rather than guessing "
-                            "randomly." + gen1_note + "\n\n"
+                            "This is a genuine best-effort estimate, not a certainty. Gen 3 vs Gen 4 "
+                            "specifically is a genuinely hard, subtle distinction — even experienced "
+                            "human players sometimes disagree on it, and you're working from a "
+                            "compressed screenshot, not full native resolution. If you're confident "
+                            "it's NOT gen 1, gen 2, or trekker, but genuinely can't tell whether it's "
+                            "3 or 4 specifically, say '3_or_4' rather than forcing a guess either way "
+                            "— that's more honest and more useful than picking one at random. Only "
+                            "say 'unknown' if you can't even narrow it down that far." + gen1_note + "\n\n"
                             "Respond in EXACTLY this format, nothing else:\n"
                             "THINK: [one short sentence on the specific visual evidence you're using]\n"
-                            "GENERATION: 1, 2, 3, 4, trekker, or unknown"
+                            "GENERATION: 1, 2, 3, 4, 3_or_4, trekker, or unknown"
                         )}
                     ]
                 }]
@@ -2110,7 +2115,7 @@ def ai_estimate_camera_generation(image_b64, country=None):
         raw = resp.json().get("content", [{}])[0].get("text", "").strip()
         gen_line = next((l for l in raw.split('\n') if l.upper().startswith('GENERATION:')), '')
         generation = gen_line.split(':', 1)[1].strip().lower() if gen_line else 'unknown'
-        if generation not in ('1', '2', '3', '4', 'trekker'):
+        if generation not in ('1', '2', '3', '4', '3_or_4', 'trekker'):
             generation = 'unknown'
         print(f"GeoAnalyzerX: camera generation estimate — generation={generation} | raw response: {raw!r}")
         return generation, raw
