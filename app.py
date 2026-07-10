@@ -2061,9 +2061,9 @@ def ai_estimate_camera_generation(image_b64, country=None):
                         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
                         {"type": "text", "text": (
                             "What Google Street View camera generation was this GeoGuessr "
-                            "screenshot most likely captured with? Use these concrete, specific "
-                            "visual signatures the GeoGuessr community actually relies on — check "
-                            "for these BEFORE falling back to a general resolution/quality guess:\n\n"
+                            "screenshot most likely captured with? Only try to identify the "
+                            "specific, reliably-recognizable categories below — everything else "
+                            "just gets grouped as 'other', no need to guess further than that.\n\n"
                             "GEN 1 (2007-2009): Genuinely very low quality — often described as "
                             "'potato' quality, with visible compression artifacts. Hard to make out "
                             "real detail anywhere in the frame, not just soft in one area. Also "
@@ -2072,44 +2072,20 @@ def ai_estimate_camera_generation(image_b64, country=None):
                             "GEN 2 (2008-2011): Two possible tells — a distinctive 'halo' (a visible "
                             "lens flare specifically around the sun), AND/OR a circular purplish "
                             "blur around the car visible when looking down toward the ground. "
-                            "Either one alone is a strong signal. Overall quality is still fairly "
-                            "low, better than Gen 1 but noticeably rougher than Gen 3.\n"
-                            "GEN 3 (2011-2019): Clear, good-quality resolution with readable text/"
-                            "signage, natural colors, no halo or circular artifacts, no unusual "
-                            "exposure — but noticeably softer/less crisp overall than Gen 4 below, "
-                            "even where there's nothing specific in frame to point to. Camera "
-                            "stitching seams may be somewhat visible if you look closely, and a "
-                            "shot facing directly into the sun may show some washed-out/blown-out "
-                            "highlights.\n"
-                            "GEN 4 (2017-present): Test this TWO ways — use whichever applies to "
-                            "what's actually in the frame:\n"
-                            "  (a) SPECIFIC fine detail, if present: individual bricks on a building, "
-                            "fine texture in road surfaces, or small text on distant signs actually "
-                            "legible, camera stitching seams nearly invisible, handles a shot facing "
-                            "the sun without washed-out highlights.\n"
-                            "  (b) GENERAL crispness, when the scene has no buildings/signs/text to "
-                            "judge by (e.g. open road, fields, trees) — the WHOLE image, right out to "
-                            "the edges and into the distance, looks genuinely crisp and high-detail "
-                            "with no soft/hazy quality anywhere, not just merely 'clear'. Do not "
-                            "default to Gen 3 just because the scene happens to lack buildings or "
-                            "signage to point to — judge overall sharpness on its own terms too.\n"
-                            "Only prefer Gen 3 if the image is genuinely just clear/readable without "
-                            "that extra level of crispness under either test — not merely because "
-                            "there was nothing specific in frame to prove Gen 4 with.\n"
+                            "Either one alone is a strong signal.\n"
                             "TREKKER / unofficial coverage (2019+): A large blurry circle specifically "
                             "at the BOTTOM of the frame only (no halo around the sun), often with an "
-                            "odd, lower-resolution look overall.\n\n"
-                            "This is a genuine best-effort estimate, not a certainty. Gen 3 vs Gen 4 "
-                            "specifically is a genuinely hard, subtle distinction — even experienced "
-                            "human players sometimes disagree on it, and you're working from a "
-                            "compressed screenshot, not full native resolution. If you're confident "
-                            "it's NOT gen 1, gen 2, or trekker, but genuinely can't tell whether it's "
-                            "3 or 4 specifically, say '3_or_4' rather than forcing a guess either way "
-                            "— that's more honest and more useful than picking one at random. Only "
-                            "say 'unknown' if you can't even narrow it down that far." + gen1_note + "\n\n"
+                            "odd, lower-resolution look overall.\n"
+                            "OTHER: any normal-looking Street View coverage that doesn't clearly "
+                            "match Gen 1, Gen 2, or Trekker above — this covers the vast majority of "
+                            "modern coverage. Don't try to further distinguish sharpness/quality "
+                            "level within this category.\n\n"
+                            "This is a genuine best-effort estimate, not a certainty — if you can't "
+                            "even confidently tell OTHER apart from something being wrong with the "
+                            "image itself, say 'unknown'." + gen1_note + "\n\n"
                             "Respond in EXACTLY this format, nothing else:\n"
                             "THINK: [one short sentence on the specific visual evidence you're using]\n"
-                            "GENERATION: 1, 2, 3, 4, 3_or_4, trekker, or unknown"
+                            "GENERATION: 1, 2, trekker, other, or unknown"
                         )}
                     ]
                 }]
@@ -2119,7 +2095,7 @@ def ai_estimate_camera_generation(image_b64, country=None):
         raw = resp.json().get("content", [{}])[0].get("text", "").strip()
         gen_line = next((l for l in raw.split('\n') if l.upper().startswith('GENERATION:')), '')
         generation = gen_line.split(':', 1)[1].strip().lower() if gen_line else 'unknown'
-        if generation not in ('1', '2', '3', '4', '3_or_4', 'trekker'):
+        if generation not in ('1', '2', 'trekker', 'other'):
             generation = 'unknown'
         print(f"GeoAnalyzerX: camera generation estimate — generation={generation} | raw response: {raw!r}")
         return generation, raw
