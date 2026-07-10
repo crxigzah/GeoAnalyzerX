@@ -2688,6 +2688,27 @@ def admin_scenes_categorize_generation():
     except Exception as e:
         return safe_error(e)
 
+@app.route("/admin/scenes/manual_pass/<scene_id>", methods=["POST","OPTIONS"])
+def admin_scenes_manual_pass(scene_id):
+    """Lets an admin manually override a quality result to Passed —
+    for cases where the AI checker got it wrong on a genuinely good
+    photo. Does not touch camera_generation."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT id FROM scenes WHERE id=:id", id=scene_id)
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Not found"}), 404
+        conn.run("""UPDATE scenes SET quality_score=1, quality_checked_at=NOW(),
+                quality_reason='Manually approved by admin override' WHERE id=:id""", id=scene_id)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
 @app.route("/admin/scenes/delete/<scene_id>", methods=["DELETE","OPTIONS"])
 def admin_scenes_delete(scene_id):
     if request.method == "OPTIONS": return jsonify({}), 200
