@@ -2216,18 +2216,22 @@ def upload_scene():
     # before the daily quota is touched, so a rejected capture doesn't
     # cost the user one of their free uploads for the day.
     scene_ok, scene_reason = ai_check_scene_quality(image_b64, country=country)
+
+    # Separate, focused camera-generation estimate — run regardless of
+    # pass/fail (previously this only ran on a PASS, since it sat after
+    # an early-return on failure, so a failed capture never got a
+    # generation label to show back to the player at all).
+    scene_generation, _ = ai_estimate_camera_generation(image_b64)
+
     if not scene_ok:
         return jsonify({
             "error": "This doesn't look like a Street View scene, so it wasn't added to the library.",
             "code": "low_quality",
             "reason": scene_reason,
+            "generation": scene_generation,
+            "passed": False,
             "uploaded": False
         }), 400
-
-    # Separate, focused camera-generation estimate — shown back to the
-    # player in the F7 capture status, and stored as a label alongside
-    # the scene (never affects the quality pass/fail above).
-    scene_generation, _ = ai_estimate_camera_generation(image_b64)
 
     if tier != "pro":
         allowed, remaining = check_and_increment_usage(user_id, 'f7_captures')
@@ -2276,7 +2280,7 @@ def upload_scene():
         return safe_error(e)
 
     log_event("scene_upload", user_id=user_id, username=username, detail=f"country={country} state={state} region={region}", ip=client_ip())
-    return jsonify({"uploaded": True, "region": region, "key": r2_key, "generation": scene_generation})
+    return jsonify({"uploaded": True, "region": region, "key": r2_key, "generation": scene_generation, "passed": True})
 
 MAPILLARY_TOKEN = os.environ.get("MAPILLARY_ACCESS_TOKEN", "")
 
@@ -2548,7 +2552,7 @@ def admin_scenes_recheck_quality():
         for scene_id, r2_key, scene_country in rows:
             b64 = get_storage_image_b64(r2_key)
             if not b64:
-                results.append({"id": str(scene_id), "checked": False, "reason": "could not fetch image"})
+                results.append({"id": str(scene_id), "checked": False, "reason": "could not fetch image from storage"})
                 continue
             passed, reason = ai_check_scene_quality(b64, country=scene_country)
             conn.run("""UPDATE scenes SET quality_score=:score, quality_checked_at=NOW(), quality_reason=:reason
@@ -2558,7 +2562,20 @@ def admin_scenes_recheck_quality():
 
         passed_count = sum(1 for r in results if r.get("passed"))
         failed_count = sum(1 for r in results if r.get("checked") and not r.get("passed"))
-        return jsonify({"results": results, "checked": len(results), "passed": passed_count, "failed": failed_count})
+        fetch_failed_count = sum(1 for r in results if not r.get("checked"))
+        return jsonify({
+            "results": results,
+            "attempted": len(results),
+            # "checked" now means genuinely evaluated (passed+failed) —
+            # previously this counted every row pulled from the DB even
+            # when the actual image couldn't be fetched from storage,
+            # which silently made attempted/checked counts not add up
+            # against passed+failed in the admin panel.
+            "checked": passed_count + failed_count,
+            "passed": passed_count,
+            "failed": failed_count,
+            "fetch_failed": fetch_failed_count,
+        })
     except Exception as e:
         return safe_error(e)
 
