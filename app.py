@@ -185,6 +185,8 @@ def init_db():
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS quality_checked_at TIMESTAMPTZ")
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS quality_reason TEXT")
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS camera_generation TEXT")
+            conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS flagged_suspicious BOOLEAN DEFAULT FALSE")
+            conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS suspicious_reason TEXT")
         except: pass
         try:
             conn.run("ALTER TABLE users ADD CONSTRAINT users_phone_number_key UNIQUE (phone_number)")
@@ -2202,11 +2204,22 @@ def ai_check_scene_quality(image_b64, country=None):
                             "blank/black frame, or an extreme macro-style close-up with no context "
                             "at all. GeoGuessr's OWN normal compass strip, round/score display, "
                             "zoom controls, and logo are all fine regardless.\n\n"
+                            "SEPARATELY, also flag anything genuinely AMBIGUOUS or unusual that "
+                            "makes you uncertain, even if you still land on an answer either way — "
+                            "e.g. something that might be a menu/UI screen but you're not fully "
+                            "sure, an odd or unfamiliar overlay, a scene that's hard to classify "
+                            "confidently, or anything else where a human should double-check your "
+                            "call. This is separate from and does not have to agree with your "
+                            "ANSWER — a photo can pass but still be worth a second look, or fail "
+                            "but be clear-cut with no need for review.\n\n"
                             "Respond in EXACTLY this format, nothing else:\n"
                             "THINK: [one short sentence on what you actually see]\n"
                             "VIOLATION: none, expanded_map, third_party_overlay, motion_blur, "
                             "bad_angle, or not_outdoor — pick 'none' if the photo is genuinely fine\n"
-                            "ANSWER: YES or NO — must be YES if VIOLATION is 'none'"
+                            "ANSWER: YES or NO — must be YES if VIOLATION is 'none'\n"
+                            "SUSPICIOUS: yes or no — flag anything genuinely uncertain for human "
+                            "review, with a short reason after a colon if yes (e.g. 'yes: might be "
+                            "a menu screen, hard to tell'), otherwise just 'no'"
                         )}
                     ]
                 }]
@@ -2218,16 +2231,25 @@ def ai_check_scene_quality(image_b64, country=None):
         passed = 'YES' in answer_line.upper()
         violation_line = next((l for l in raw.split('\n') if l.upper().startswith('VIOLATION:')), '')
         violation = violation_line.split(':', 1)[1].strip().lower() if violation_line else ''
+        suspicious_line = next((l for l in raw.split('\n') if l.upper().startswith('SUSPICIOUS:')), '')
+        suspicious_raw = suspicious_line.split(':', 1)[1].strip() if ':' in suspicious_line else ''
+        suspicious = suspicious_raw.lower().startswith('yes')
+        # The reason after "yes:" if present, otherwise a generic note.
+        suspicious_reason = ''
+        if suspicious:
+            parts = suspicious_raw.split(':', 1)
+            suspicious_reason = parts[1].strip() if len(parts) > 1 else 'Flagged as uncertain by AI check'
+
         # Store/display just the reasoning sentence, not the raw
-        # "THINK: ..." / "VIOLATION: ..." / "ANSWER: ..." formatting —
-        # cleaner for an admin glancing at a card in the Scene Library.
+        # "THINK: ..." / "VIOLATION: ..." / "ANSWER: ..." / "SUSPICIOUS: ..."
+        # formatting — cleaner for an admin glancing at a card.
         think_line = next((l for l in raw.split('\n') if l.upper().startswith('THINK:')), raw)
         clean_reason = think_line.split(':', 1)[1].strip() if ':' in think_line else think_line
-        # Defensive: the model doesn't always put THINK/VIOLATION/ANSWER
-        # on separate lines like the format asks — if it ran them
-        # together, the split above would have grabbed the trailing
-        # fields too. Strip anything from either onward regardless.
-        for marker in ('VIOLATION:', 'ANSWER:'):
+        # Defensive: the model doesn't always put each field on its own
+        # line like the format asks — if it ran them together, the
+        # split above would have grabbed the trailing fields too. Strip
+        # anything from any of them onward regardless.
+        for marker in ('VIOLATION:', 'ANSWER:', 'SUSPICIOUS:'):
             idx = clean_reason.upper().find(marker)
             if idx != -1:
                 clean_reason = clean_reason[:idx].strip()
@@ -2244,11 +2266,11 @@ def ai_check_scene_quality(image_b64, country=None):
             print(f"GeoAnalyzerX: scene quality check — overriding NO to YES, VIOLATION was 'none': {clean_reason!r}")
             passed = True
             clean_reason = clean_reason + " (auto-corrected: AI said NO but flagged no actual violation)"
-        print(f"GeoAnalyzerX: scene quality check — passed={passed} | raw response: {raw!r}")
-        return passed, clean_reason
+        print(f"GeoAnalyzerX: scene quality check — passed={passed} | suspicious={suspicious} | raw response: {raw!r}")
+        return passed, clean_reason, suspicious, suspicious_reason
     except Exception as e:
         print("Scene quality check error:", e)
-        return True, "validation error — allowing"
+        return True, "validation error — allowing", False, ""
 
 @app.route("/scenes/validate", methods=["POST", "OPTIONS"])
 def validate_scene():
@@ -2260,8 +2282,8 @@ def validate_scene():
     img_ok, img_err = validate_image_b64(image_b64)
     if not img_ok:
         return jsonify({"valid": False, "reason": img_err}), 400
-    valid, reason = ai_check_scene_quality(image_b64)
-    return jsonify({"valid": valid, "reason": reason})
+    valid, reason, suspicious, suspicious_reason = ai_check_scene_quality(image_b64)
+    return jsonify({"valid": valid, "reason": reason, "suspicious": suspicious, "suspicious_reason": suspicious_reason})
 
 @app.route("/scenes/upload", methods=["POST", "OPTIONS"])
 def upload_scene():
@@ -2299,7 +2321,7 @@ def upload_scene():
     # screenshots, blank/black frames, or other non-scene junk. Checked
     # before the daily quota is touched, so a rejected capture doesn't
     # cost the user one of their free uploads for the day.
-    scene_ok, scene_reason = ai_check_scene_quality(image_b64, country=country)
+    scene_ok, scene_reason, scene_suspicious, scene_suspicious_reason = ai_check_scene_quality(image_b64, country=country)
 
     # Separate, focused camera-generation estimate — run regardless of
     # pass/fail (previously this only ran on a PASS, since it sat after
@@ -2353,18 +2375,20 @@ def upload_scene():
     try:
         conn = get_db()
         conn.run("""INSERT INTO scenes (country, state, region, lat, lng, r2_key, contributor_user_id,
-                quality_score, quality_checked_at, quality_reason, camera_generation)
+                quality_score, quality_checked_at, quality_reason, camera_generation,
+                flagged_suspicious, suspicious_reason)
             VALUES (:country, :state, :region, :lat, :lng, :key, :cid,
-                :qscore, NOW(), :qreason, :gen)""",
+                :qscore, NOW(), :qreason, :gen, :susp, :suspreason)""",
             country=country, state=state, region=region,
             lat=lat, lng=lng, key=r2_key, cid=contributor_id,
-            qscore=1 if scene_ok else 0, qreason=scene_reason, gen=scene_generation)
+            qscore=1 if scene_ok else 0, qreason=scene_reason, gen=scene_generation,
+            susp=scene_suspicious, suspreason=scene_suspicious_reason)
         conn.close()
     except Exception as e:
         return safe_error(e)
 
     log_event("scene_upload", user_id=user_id, username=username, detail=f"country={country} state={state} region={region}", ip=client_ip())
-    return jsonify({"uploaded": True, "region": region, "key": r2_key, "generation": scene_generation, "passed": True})
+    return jsonify({"uploaded": True, "region": region, "key": r2_key, "generation": scene_generation, "passed": True, "suspicious": scene_suspicious})
 
 MAPILLARY_TOKEN = os.environ.get("MAPILLARY_ACCESS_TOKEN", "")
 
@@ -2442,6 +2466,7 @@ def get_refs():
                 SELECT r2_key, region, quality_score, lat, lng FROM scenes
                 WHERE {scope_clause} AND lat IS NOT NULL AND lng IS NOT NULL
                   AND (quality_checked_at IS NULL OR quality_score = 1)
+                  AND (flagged_suspicious IS NULL OR flagged_suspicious = FALSE)
                 ORDER BY uploaded_at DESC LIMIT 200""",
                 **{("state" if state else "country"): scope_val})
 
@@ -2473,6 +2498,7 @@ def get_refs():
                     SELECT r2_key, region, quality_score FROM scenes
                     WHERE state ILIKE :state
                       AND (quality_checked_at IS NULL OR quality_score = 1)
+                      AND (flagged_suspicious IS NULL OR flagged_suspicious = FALSE)
                     ORDER BY (region = :region) DESC, quality_score DESC, uploaded_at DESC
                     LIMIT :limit""",
                     state=state, region=region, limit=limit)
@@ -2481,6 +2507,7 @@ def get_refs():
                     SELECT r2_key, region, quality_score FROM scenes
                     WHERE state ILIKE :state
                       AND (quality_checked_at IS NULL OR quality_score = 1)
+                      AND (flagged_suspicious IS NULL OR flagged_suspicious = FALSE)
                     ORDER BY quality_score DESC, uploaded_at DESC
                     LIMIT :limit""",
                     state=state, limit=limit)
@@ -2489,6 +2516,7 @@ def get_refs():
                     SELECT r2_key, region, quality_score FROM scenes
                     WHERE country ILIKE :country
                       AND (quality_checked_at IS NULL OR quality_score = 1)
+                      AND (flagged_suspicious IS NULL OR flagged_suspicious = FALSE)
                     ORDER BY quality_score DESC, uploaded_at DESC
                     LIMIT :limit""",
                     country=country, limit=limit)
@@ -2567,6 +2595,8 @@ def admin_scenes_list():
         where.append("quality_checked_at IS NOT NULL AND quality_score = 1")
     elif quality == "failed":
         where.append("quality_checked_at IS NOT NULL AND quality_score = 0")
+    elif quality == "suspicious":
+        where.append("flagged_suspicious = TRUE")
     if generation:
         where.append("camera_generation = :generation")
         params["generation"] = generation
@@ -2585,7 +2615,8 @@ def admin_scenes_list():
         total = total_row[0][0] if total_row else 0
         rows = conn.run(f"""SELECT s.id, s.country, s.state, s.region, s.r2_key, s.quality_score,
                 s.quality_checked_at, s.quality_reason, s.times_used, s.uploaded_at,
-                s.contributor_user_id, u.username, s.camera_generation
+                s.contributor_user_id, u.username, s.camera_generation,
+                s.flagged_suspicious, s.suspicious_reason
             FROM scenes s
             LEFT JOIN users u ON u.id::TEXT = s.contributor_user_id
             WHERE {where_sql}
@@ -2598,7 +2629,7 @@ def admin_scenes_list():
             "quality_score": r[5], "quality_checked_at": str(r[6]) if r[6] else None,
             "quality_reason": r[7], "times_used": r[8], "uploaded_at": str(r[9]),
             "contributor_user_id": r[10], "contributor_username": r[11] or ("Unknown (deleted account)" if r[10] else "Anonymous"),
-            "camera_generation": r[12],
+            "camera_generation": r[12], "flagged_suspicious": r[13], "suspicious_reason": r[14],
         } for r in rows]
         return jsonify({"scenes": scenes, "total": total, "limit": limit, "offset": offset})
     except Exception as e:
@@ -2651,15 +2682,17 @@ def admin_scenes_recheck_quality():
                     reason="Could not fetch image from storage (broken link)", id=scene_id)
                 results.append({"id": str(scene_id), "checked": True, "passed": False, "reason": "could not fetch image from storage", "fetch_failed": True})
                 continue
-            passed, reason = ai_check_scene_quality(b64, country=scene_country)
-            conn.run("""UPDATE scenes SET quality_score=:score, quality_checked_at=NOW(), quality_reason=:reason
-                WHERE id=:id""", score=1 if passed else 0, reason=reason, id=scene_id)
-            results.append({"id": str(scene_id), "checked": True, "passed": passed, "reason": reason})
+            passed, reason, suspicious, suspicious_reason = ai_check_scene_quality(b64, country=scene_country)
+            conn.run("""UPDATE scenes SET quality_score=:score, quality_checked_at=NOW(), quality_reason=:reason,
+                    flagged_suspicious=:susp, suspicious_reason=:suspreason
+                WHERE id=:id""", score=1 if passed else 0, reason=reason, susp=suspicious, suspreason=suspicious_reason, id=scene_id)
+            results.append({"id": str(scene_id), "checked": True, "passed": passed, "reason": reason, "suspicious": suspicious})
         conn.close()
 
         passed_count = sum(1 for r in results if r.get("passed"))
         failed_count = sum(1 for r in results if r.get("checked") and not r.get("passed") and not r.get("fetch_failed"))
         fetch_failed_count = sum(1 for r in results if r.get("fetch_failed"))
+        suspicious_count = sum(1 for r in results if r.get("suspicious"))
         return jsonify({
             "results": results,
             "attempted": len(results),
@@ -2667,6 +2700,7 @@ def admin_scenes_recheck_quality():
             "passed": passed_count,
             "failed": failed_count,
             "fetch_failed": fetch_failed_count,
+            "suspicious": suspicious_count,
         })
     except Exception as e:
         return safe_error(e)
@@ -2757,6 +2791,27 @@ def admin_scenes_manual_pass_bulk():
             return jsonify({"error": "Provide scene_ids, all_failed, or all_unchecked"}), 400
         conn.close()
         return jsonify({"success": True, "updated": len(result)})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/scenes/clear_suspicious/<scene_id>", methods=["POST","OPTIONS"])
+def admin_scenes_clear_suspicious(scene_id):
+    """Marks a suspicious-flagged scene as reviewed — clears the flag
+    without changing its existing pass/fail status, since the admin
+    may have decided the AI's original quality verdict was fine and
+    only the 'needs a second look' flag was the actual concern."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT id FROM scenes WHERE id=:id", id=scene_id)
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Not found"}), 404
+        conn.run("UPDATE scenes SET flagged_suspicious=FALSE WHERE id=:id", id=scene_id)
+        conn.close()
+        return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
 
