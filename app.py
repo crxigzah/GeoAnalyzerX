@@ -1995,9 +1995,14 @@ def forms_submit():
 def ai_check_scene_quality(image_b64):
     """Uses Claude to check if an image is a genuine outdoor Street-View-style
     scene, to keep the community library free of junk (selfies, screenshots
-    of menus, blank/black images, memes, etc). Fails open (allows the
-    upload) if the API key is missing or the check itself errors, so a
-    Claude API outage never blocks legitimate F7 captures entirely."""
+    of menus, blank/black images, memes, an expanded guessing map, etc).
+    Fails open (allows the upload) if the API key is missing or the check
+    itself errors, so a Claude API outage never blocks legitimate F7
+    captures entirely. Asks for one short line of reasoning before the
+    final answer — a fast/cheap model judging something like "does the
+    map cover a meaningful chunk of the frame" far more reliably gets it
+    right when it can briefly reason first, rather than answering blind
+    in a single token."""
     import requests as req
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not anthropic_key:
@@ -2012,54 +2017,46 @@ def ai_check_scene_quality(image_b64):
             },
             json={
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 10,
+                "max_tokens": 80,
                 "messages": [{
                     "role": "user",
                     "content": [
                         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64}},
                         {"type": "text", "text": (
-                            "Is this a genuine, USEFUL Google Street View scene of an outdoor "
-                            "real-world location, viewed through the normal GeoGuessr game "
-                            "interface? Reply YES even if GeoGuessr's OWN standard interface "
-                            "is visible — its compass/heading strip along the top, the round "
-                            "number and score display, a SMALL minimap tucked in a corner, zoom "
-                            "controls, or the GeoGuessr logo are all completely normal and "
-                            "expected, NOT a problem.\n\n"
-                            "Reply NO if any of the following apply:\n"
-                            "1. It's not outdoor street-level scenery at all (a selfie, a "
-                            "menu/loading screen, a blank/black frame, a screenshot of "
-                            "something unrelated).\n"
-                            "2. It's covered by a THIRD-PARTY addition unrelated to "
-                            "GeoGuessr's own interface — a browser extension's control panel, "
-                            "a chat window, a userscript's training-mode banner or button "
-                            "list, or similar — where that element takes up a meaningful part "
-                            "of the frame. A small watermark or sliver in one corner that "
-                            "still leaves the scene clearly visible is fine — reply YES for that.\n"
-                            "3. GeoGuessr's OWN guessing map has been EXPANDED to a large panel "
-                            "(for placing a pin) rather than staying as a small corner minimap "
-                            "— if the map takes up a meaningful chunk of the frame (roughly a "
-                            "quarter or more of the image, or enough that the actual street "
-                            "scene is significantly obscured), reject it even though the map "
-                            "itself is GeoGuessr's own feature. Only a genuinely small, corner-"
-                            "sized minimap is acceptable — a large expanded map panel is not, "
-                            "because it defeats the purpose of a usable training photo.\n"
-                            "4. The camera has been zoomed in so far, or the view is so "
-                            "blurry/close-up, that no genuinely useful identifying detail is "
-                            "visible — e.g. a tight zoom into a patch of grass, dirt, gravel, "
-                            "or foliage filling the whole frame with no road, sky, horizon, "
-                            "building, sign, or other recognizable feature. A normal Street "
-                            "View zoom level showing real surroundings is fine even if part of "
-                            "it is a little soft-focus — only reject genuinely unusable, "
-                            "content-free close-ups.\n\n"
-                            "Reply only YES or NO."
+                            "Check this GeoGuessr screenshot for THREE things, in order:\n\n"
+                            "1. AN EXPANDED GUESSING MAP. Concrete things to look for: a solid "
+                            "blue/green/tan colored map area with visible roads or region/country "
+                            "borders, place-name text labels (city or country names printed on "
+                            "the map), a map zoom +/- control cluster, or text like 'Place your "
+                            "pin'. If you see ANY of these covering a meaningful chunk of the "
+                            "image (clearly more than a small corner square, even if the street "
+                            "scene is still partly visible alongside it), this FAILS — reject it, "
+                            "even though the map is GeoGuessr's own normal feature. A genuinely "
+                            "small, corner-sized minimap with no big label text is fine.\n\n"
+                            "2. THIRD-PARTY overlays — a browser extension panel, a chat window, "
+                            "a userscript banner or button list — covering a meaningful part of "
+                            "the frame. A small watermark/sliver that leaves the scene clearly "
+                            "visible is fine.\n\n"
+                            "3. Whether it's otherwise a genuine, USEFUL outdoor Street View "
+                            "scene at all — not a selfie, menu/loading screen, blank/black frame, "
+                            "or such an extreme close-up zoom (e.g. a patch of grass/dirt/gravel "
+                            "filling the whole frame) that no road, sky, horizon, building, sign, "
+                            "or other identifying feature is visible. GeoGuessr's OWN normal "
+                            "compass strip, round/score display, zoom controls, and logo are all "
+                            "fine regardless.\n\n"
+                            "Respond in EXACTLY this format, nothing else:\n"
+                            "THINK: [one short sentence on what you actually see]\n"
+                            "ANSWER: YES or NO"
                         )}
                     ]
                 }]
             },
             timeout=10
         )
-        answer = resp.json().get("content", [{}])[0].get("text", "").strip().upper()
-        return answer.startswith("YES"), answer
+        raw = resp.json().get("content", [{}])[0].get("text", "").strip()
+        answer_line = next((l for l in raw.split('\n') if l.upper().startswith('ANSWER:')), raw)
+        passed = 'YES' in answer_line.upper()
+        return passed, raw
     except Exception as e:
         print("Scene quality check error:", e)
         return True, "validation error — allowing"
