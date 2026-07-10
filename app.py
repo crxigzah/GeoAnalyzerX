@@ -2054,7 +2054,7 @@ def ai_estimate_camera_generation(image_b64, country=None):
             },
             json={
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 70,
+                "max_tokens": 150,
                 "messages": [{
                     "role": "user",
                     "content": [
