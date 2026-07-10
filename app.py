@@ -2056,6 +2056,7 @@ def ai_check_scene_quality(image_b64):
         raw = resp.json().get("content", [{}])[0].get("text", "").strip()
         answer_line = next((l for l in raw.split('\n') if l.upper().startswith('ANSWER:')), raw)
         passed = 'YES' in answer_line.upper()
+        print(f"GeoAnalyzerX: scene quality check — passed={passed} | raw response: {raw!r}")
         return passed, raw
     except Exception as e:
         print("Scene quality check error:", e)
