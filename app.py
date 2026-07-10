@@ -2223,6 +2223,13 @@ def ai_check_scene_quality(image_b64, country=None):
         # admin glancing at a card in the Scene Library.
         think_line = next((l for l in raw.split('\n') if l.upper().startswith('THINK:')), raw)
         clean_reason = think_line.split(':', 1)[1].strip() if ':' in think_line else think_line
+        # Defensive: the model doesn't always put THINK and ANSWER on
+        # separate lines like the format asks — if it ran them together,
+        # the split above would have grabbed the trailing "ANSWER: NO"
+        # too. Strip anything from "ANSWER:" onward regardless.
+        answer_idx = clean_reason.upper().find('ANSWER:')
+        if answer_idx != -1:
+            clean_reason = clean_reason[:answer_idx].strip()
         print(f"GeoAnalyzerX: scene quality check — passed={passed} | raw response: {raw!r}")
         return passed, clean_reason
     except Exception as e:
