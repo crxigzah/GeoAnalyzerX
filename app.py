@@ -2723,19 +2723,21 @@ def admin_scenes_categorize_generation():
 
 @app.route("/admin/scenes/manual_pass_bulk", methods=["POST","OPTIONS"])
 def admin_scenes_manual_pass_bulk():
-    """Bulk version of the manual-pass override — either a specific
-    scene_ids list (from the Scene Library's checkbox multi-select), or
-    all_failed=true to pass every currently-failed scene in the library
-    in one go. No AI calls involved here at all (unlike quality/
-    generation batch processing), so this is a single fast DB write
-    rather than the slower per-image auto-loop pattern used elsewhere —
-    no timeout risk, no need to chain requests together."""
+    """Bulk version of the manual-pass override — a specific scene_ids
+    list (from the Scene Library's checkbox multi-select), all_failed=
+    true to pass every currently-failed scene, or all_unchecked=true to
+    pass every scene that's never been quality-checked at all, skipping
+    the AI check entirely. No AI calls involved here at all (unlike
+    quality/generation batch processing), so this is a single fast DB
+    write rather than the slower per-image auto-loop pattern used
+    elsewhere — no timeout risk, no need to chain requests together."""
     if request.method == "OPTIONS": return jsonify({}), 200
     ok, err = require_admin()
     if not ok: return err
     d = request.json or {}
     scene_ids = d.get("scene_ids") or []
     all_failed = bool(d.get("all_failed"))
+    all_unchecked = bool(d.get("all_unchecked"))
     try:
         conn = get_db()
         if scene_ids:
@@ -2746,9 +2748,13 @@ def admin_scenes_manual_pass_bulk():
             result = conn.run("""UPDATE scenes SET quality_score=1, quality_checked_at=NOW(),
                     quality_reason='Manually approved by admin override (bulk — all failed)'
                 WHERE quality_checked_at IS NOT NULL AND quality_score = 0 RETURNING id""")
+        elif all_unchecked:
+            result = conn.run("""UPDATE scenes SET quality_score=1, quality_checked_at=NOW(),
+                    quality_reason='Manually approved by admin override (bulk — all unchecked, skipped AI check)'
+                WHERE quality_checked_at IS NULL RETURNING id""")
         else:
             conn.close()
-            return jsonify({"error": "Provide scene_ids or all_failed"}), 400
+            return jsonify({"error": "Provide scene_ids, all_failed, or all_unchecked"}), 400
         conn.close()
         return jsonify({"success": True, "updated": len(result)})
     except Exception as e:
