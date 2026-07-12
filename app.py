@@ -188,6 +188,12 @@ def init_db():
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS captured_year TEXT")
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS flagged_suspicious BOOLEAN DEFAULT FALSE")
             conn.run("ALTER TABLE scenes ADD COLUMN IF NOT EXISTS suspicious_reason TEXT")
+            conn.run("""CREATE TABLE IF NOT EXISTS dial_region_maps (
+                country TEXT PRIMARY KEY,
+                image_url TEXT NOT NULL,
+                r2_key TEXT NOT NULL,
+                uploaded_at TIMESTAMPTZ DEFAULT NOW()
+            )""")
         except: pass
         try:
             conn.run("ALTER TABLE users ADD CONSTRAINT users_phone_number_key UNIQUE (phone_number)")
@@ -3079,6 +3085,110 @@ def admin_upload_guide_image():
             return jsonify({"error": f"Storage upload failed: {resp.status_code}"}), 500
         url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{storage_url_key(r2_key)}"
         return jsonify({"url": url})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/dial_region_maps/upload", methods=["POST","OPTIONS"])
+def admin_upload_dial_region_map():
+    """Uploads (or replaces) the dialing-code region map graphic for one
+    country, shown on the public Phone Code Map when that country is
+    clicked. One image per country — uploading again for the same
+    country overwrites the previous one, both in storage and in the DB
+    (old file is deleted first to avoid leaving orphaned storage)."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    country = (d.get("country") or "").strip()
+    image_b64 = d.get("image", "")
+    if not country:
+        return jsonify({"error": "No country specified"}), 400
+    if not image_b64:
+        return jsonify({"error": "No image provided"}), 400
+    try:
+        if "," in image_b64:
+            header, image_b64 = image_b64.split(",", 1)
+            ext = "png" if "png" in header else "jpg"
+        else:
+            ext = "jpg"
+        img_bytes = base64.b64decode(image_b64)
+        r2_key = f"dial-region-maps/{country}/{uuid.uuid4()}.{ext}"
+        upload_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{storage_url_key(r2_key)}"
+        resp = http_requests.post(
+            upload_url,
+            headers={
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": f"image/{ext}",
+                "x-upsert": "true"
+            },
+            data=img_bytes,
+            timeout=30
+        )
+        if resp.status_code not in (200, 201):
+            return jsonify({"error": f"Storage upload failed: {resp.status_code}"}), 500
+        url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{storage_url_key(r2_key)}"
+
+        conn = get_db()
+        old_rows = conn.run("SELECT r2_key FROM dial_region_maps WHERE country=:c", c=country)
+        conn.run("""INSERT INTO dial_region_maps (country, image_url, r2_key, uploaded_at)
+                VALUES (:c, :url, :key, NOW())
+            ON CONFLICT (country) DO UPDATE SET image_url=:url, r2_key=:key, uploaded_at=NOW()""",
+            c=country, url=url, key=r2_key)
+        conn.close()
+
+        # Clean up the old file now that the new one is safely stored,
+        # so replacing an image doesn't leave the previous one orphaned.
+        if old_rows and old_rows[0][0] != r2_key:
+            try:
+                del_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{storage_url_key(old_rows[0][0])}"
+                http_requests.delete(del_url, headers={"Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=15)
+            except Exception as e:
+                print("Old dial region map cleanup error:", e)
+
+        return jsonify({"url": url})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/dial_region_maps/list", methods=["GET","OPTIONS"])
+def list_dial_region_maps():
+    """Public — no auth required. Returns the whole country→image_url
+    mapping in one call, so the Phone Code Map can look up instantly
+    on click without a round-trip per country. Also used by the admin
+    panel's own management table, which additionally wants the upload
+    date — kept as one shared endpoint rather than two near-duplicates."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT country, image_url, uploaded_at FROM dial_region_maps")
+        conn.close()
+        return jsonify({
+            "maps": {r[0]: r[1] for r in rows},
+            "details": [{"country": r[0], "image_url": r[1], "uploaded_at": str(r[2]) if r[2] else None} for r in rows]
+        })
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/dial_region_maps/<country>", methods=["DELETE","OPTIONS"])
+def admin_delete_dial_region_map(country):
+    """Removes a country's dialing-code region map — both the DB row
+    and the actual file in storage."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT r2_key FROM dial_region_maps WHERE country=:c", c=country)
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Not found"}), 404
+        conn.run("DELETE FROM dial_region_maps WHERE country=:c", c=country)
+        conn.close()
+        try:
+            del_url = f"{SUPABASE_URL}/storage/v1/object/scenes/{storage_url_key(rows[0][0])}"
+            http_requests.delete(del_url, headers={"Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=15)
+        except Exception as e:
+            print("Dial region map storage delete error (row already removed):", e)
+        return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
 
