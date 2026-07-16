@@ -47,6 +47,12 @@ import requests as http_requests
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM     = os.environ.get("EMAIL_FROM", "GeoAnalyzerX <noreply@geoanalyzerx.net>")
 ADMIN_KEY      = os.environ.get("ADMIN_KEY", "")
+# Pings a Discord channel when a new "Report a Meta Issue" submission
+# comes in from metas.html. Create one via the target channel's Settings
+# → Integrations → Webhooks → New Webhook, copy its URL, and set it as
+# this env var on Render. Notifications are skipped (not an error) if
+# this isn't set.
+DISCORD_META_REPORT_WEBHOOK = os.environ.get("DISCORD_META_REPORT_WEBHOOK", "")
 
 def send_email(to, subject, html):
     if not RESEND_API_KEY:
@@ -1973,9 +1979,39 @@ def report_meta():
             VALUES (:country, :description, :uid, :username, :email)""",
             country=country, description=description, uid=user_id, username=username, email=email)
         conn.close()
+        notify_discord_meta_report(country, description, username, email)
         return jsonify({"success": True})
     except Exception as e:
         return safe_error(e)
+
+def notify_discord_meta_report(country, description, username, email):
+    """Best-effort Discord webhook ping for a new meta report. Never
+    raises — a Discord outage or missing webhook URL shouldn't affect
+    whether the report itself gets saved, since the report is already
+    safely in the database by the time this runs."""
+    if not DISCORD_META_REPORT_WEBHOOK:
+        return
+    reporter = username if username else "Anonymous"
+    if email:
+        reporter += f" ({email})"
+    try:
+        http_requests.post(
+            DISCORD_META_REPORT_WEBHOOK,
+            json={
+                "embeds": [{
+                    "title": "🚩 New Meta Report",
+                    "color": 0xFF6B6B,
+                    "fields": [
+                        {"name": "Country", "value": country, "inline": True},
+                        {"name": "Reported by", "value": reporter, "inline": True},
+                        {"name": "Description", "value": description[:1000]},
+                    ],
+                }]
+            },
+            timeout=5,
+        )
+    except Exception as e:
+        print("Discord meta report webhook error:", e)
 
 @app.route("/guess/stats", methods=["POST", "OPTIONS"])
 def guess_stats():
