@@ -674,7 +674,7 @@ def geo_country_outline():
                 "q": name,
                 "format": "geojson",
                 "polygon_geojson": 1,
-                "polygon_threshold": 0.005,  # simplify a bit; keeps payloads small without losing the island's recognizable shape
+                "polygon_threshold": 0.0001,  # ~11m — these are all small territories, so even full coastline detail is a tiny payload; a coarser value (0.005/~500m) was collapsing islands like Christmas Island into a shapeless blob
                 "limit": 1,
             },
             headers={
