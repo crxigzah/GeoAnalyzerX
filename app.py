@@ -478,17 +478,91 @@ def get_r2_image_b64(key):
 def get_r2_client():
     pass
 
-def classify_region(lat, lng, state):
-    """Classify lat/lng into a broad region quadrant."""
+# One approximate geographic centre per GeoGuessr-supported country, used
+# as the reference point for the north/south/east/west quadrant split in
+# classify_region(). This used to fall back to a single hardcoded
+# Australia-shaped centre for EVERY country when a state wasn't in
+# STATE_CENTRES (which only ever had Australian states in it) — meaning a
+# Malaysia photo, a Peru photo, an Iceland photo etc. were all quadrant-
+# classified against Australia's centre and landed on the same wrong
+# quadrant every time regardless of where in the country they actually were.
+# These are coarse country centroids, not precise state centroids like the
+# Australia table below — good enough for a rough browsing-quadrant label,
+# not meant to be geographically authoritative.
+COUNTRY_CENTRES = {
+    'botswana': (-22.0, 24.0), 'eswatini': (-26.5, 31.5), 'ghana': (7.9, -1.0),
+    'kenya': (0.5, 37.9), 'lesotho': (-29.6, 28.2), 'madagascar': (-18.9, 46.9),
+    'namibia': (-22.5, 17.0), 'nigeria': (9.1, 8.7), 'rwanda': (-1.9, 29.9),
+    'são tomé and príncipe': (0.2, 6.6), 'sao tome and principe': (0.2, 6.6),
+    'senegal': (14.5, -14.5), 'south africa': (-29.0, 24.0), 'tunisia': (34.0, 9.0),
+    'uganda': (1.0, 32.5), 'bangladesh': (23.7, 90.4), 'bhutan': (27.5, 90.5),
+    'cambodia': (12.6, 104.9), 'christmas island': (-10.5, 105.6), 'cyprus': (35.1, 33.4),
+    'georgia': (42.3, 43.4), 'hong kong': (22.3, 114.2), 'india': (22.0, 79.0),
+    'indonesia': (-2.5, 118.0), 'israel': (31.5, 34.8), 'japan': (36.2, 138.3),
+    'jordan': (31.0, 36.5), 'kazakhstan': (48.0, 68.0), 'kyrgyzstan': (41.2, 74.8),
+    'laos': (18.0, 105.0), 'lebanon': (33.9, 35.9), 'malaysia': (4.2, 101.9),
+    'mongolia': (46.9, 103.8), 'nepal': (28.4, 84.1), 'oman': (21.0, 57.0),
+    'philippines': (12.9, 121.8), 'qatar': (25.3, 51.2), 'russia': (61.5, 105.3),
+    'singapore': (1.35, 103.8), 'south korea': (36.5, 127.9), 'sri lanka': (7.9, 80.7),
+    'taiwan': (23.7, 121.0), 'thailand': (15.9, 101.0), 'united arab emirates': (24.0, 54.0),
+    'vietnam': (16.0, 108.0), 'albania': (41.2, 20.2), 'andorra': (42.5, 1.5),
+    'austria': (47.5, 14.5), 'belgium': (50.8, 4.5), 'bosnia and herzegovina': (44.0, 17.8),
+    'bulgaria': (42.7, 25.5), 'croatia': (45.1, 16.4), 'czech republic': (49.8, 15.5),
+    'denmark': (56.0, 9.5), 'estonia': (58.6, 25.0), 'faroe islands': (62.0, -6.8),
+    'finland': (64.0, 26.0), 'france': (46.6, 2.2), 'germany': (51.2, 10.4),
+    'gibraltar': (36.1, -5.35), 'greece': (39.0, 22.0), 'hungary': (47.2, 19.5),
+    'iceland': (65.0, -18.0), 'ireland': (53.4, -8.0), 'isle of man': (54.2, -4.5),
+    'italy': (42.8, 12.8), 'jersey': (49.2, -2.1), 'latvia': (56.9, 24.6),
+    'liechtenstein': (47.2, 9.5), 'lithuania': (55.2, 23.9), 'luxembourg': (49.8, 6.1),
+    'malta': (35.9, 14.5), 'monaco': (43.7, 7.4), 'montenegro': (42.7, 19.3),
+    'netherlands': (52.2, 5.3), 'north macedonia': (41.6, 21.7), 'norway': (60.5, 8.5),
+    'poland': (52.0, 19.5), 'portugal': (39.6, -8.0), 'romania': (45.9, 25.0),
+    'san marino': (43.9, 12.4), 'serbia': (44.0, 21.0), 'slovakia': (48.7, 19.5),
+    'slovenia': (46.1, 14.8), 'spain': (40.0, -3.7), 'sweden': (62.0, 15.0),
+    'switzerland': (46.8, 8.2), 'türkiye': (39.0, 35.0), 'turkiye': (39.0, 35.0),
+    'turkey': (39.0, 35.0), 'ukraine': (48.4, 31.2), 'united kingdom': (54.0, -2.5),
+    'canada': (56.1, -106.3), 'costa rica': (9.7, -84.0), 'curaçao': (12.2, -69.0),
+    'curacao': (12.2, -69.0), 'dominican republic': (18.7, -70.2), 'greenland': (71.7, -42.6),
+    'guatemala': (15.8, -90.2), 'mexico': (23.6, -102.5), 'panama': (8.5, -80.8),
+    'puerto rico': (18.2, -66.5), 'united states': (39.8, -98.6),
+    'united states virgin islands': (18.3, -64.9), 'american samoa': (-14.3, -170.7),
+    'australia': (-25.0, 133.0), 'guam': (13.4, 144.8), 'new zealand': (-41.0, 174.0),
+    'northern mariana islands': (15.2, 145.7), 'argentina': (-38.4, -63.6),
+    'bolivia': (-16.3, -63.6), 'brazil': (-14.2, -51.9), 'chile': (-35.7, -71.5),
+    'colombia': (4.6, -74.3), 'ecuador': (-1.8, -78.2), 'paraguay': (-23.4, -58.4),
+    'peru': (-9.2, -75.0), 'uruguay': (-32.5, -55.8),
+}
+
+# Precise per-state centres, kept ONLY for Australia since these were
+# hand-verified against the get_aus_state_from_coords() boxes below. Do NOT
+# extend this dict with other countries' states — for anywhere else, use
+# COUNTRY_CENTRES above (per-country, not per-state) as the reference point.
+AUS_STATE_CENTRES = {
+    'victoria': (-37.0, 144.0), 'queensland': (-22.0, 144.0),
+    'new south wales': (-32.0, 146.0), 'south australia': (-30.0, 135.0),
+    'western australia': (-25.0, 121.0), 'northern territory': (-19.0, 133.0),
+    'tasmania': (-42.0, 146.5),
+}
+
+def classify_region(lat, lng, state, country=None):
+    """Classify lat/lng into a broad region quadrant, relative to a
+    sensible reference point for wherever the photo actually is.
+
+    For Australia we still use precise per-state centres (unchanged
+    behaviour). For every other country we use that country's own rough
+    centroid, instead of silently defaulting to Australia's centre — which
+    is what caused every non-Australian country's photos to be classified
+    against Australia's geography and pushed toward the same wrong
+    quadrant regardless of where in that country they were taken.
+    """
     if not lat or not lng:
         return 'central'
-    STATE_CENTRES = {
-        'victoria': (-37.0, 144.0), 'queensland': (-22.0, 144.0),
-        'new south wales': (-32.0, 146.0), 'south australia': (-30.0, 135.0),
-        'western australia': (-25.0, 121.0), 'northern territory': (-19.0, 133.0),
-        'tasmania': (-42.0, 146.5),
-    }
-    centre = STATE_CENTRES.get((state or '').lower(), (-25.0, 133.0))
+    country_key = (country or '').strip().lower()
+    state_key = (state or '').strip().lower()
+    if country_key == 'australia' and state_key in AUS_STATE_CENTRES:
+        centre = AUS_STATE_CENTRES[state_key]
+    else:
+        centre = COUNTRY_CENTRES.get(country_key, (-25.0, 133.0))
     ns = 'north' if float(lat) > centre[0] else 'south'
     ew = 'east'  if float(lng) > centre[1] else 'west'
     return f"{ns}{ew}"
@@ -510,6 +584,52 @@ def get_aus_state_from_coords(lat, lng):
         if lng >= 149 and lat < -37.5: return 'Victoria'
         if lat <= -29.0: return 'New South Wales'
     return ''
+
+def get_state_from_coords(lat, lng, country=None):
+    """Reverse-geocode lat/lng into a state/province/region name for ANY
+    country, using OpenStreetMap's free Nominatim service. This replaces
+    the old approach of hand-writing a bounding-box function per country
+    (like get_aus_state_from_coords above) — that doesn't scale to 113+
+    countries and is exactly the kind of hardcoded, country-specific logic
+    that caused the original bug. Real reverse geocoding works the same
+    way for every country without per-country boxes to write and maintain.
+
+    Returns '' on any failure (missing coords, network error, no address
+    match) — callers should treat that the same as "couldn't determine
+    state" and let the photo land in the 'unknown' state folder, same as
+    before, rather than crashing the upload.
+    """
+    if not lat or not lng:
+        return ''
+    try:
+        import requests
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={
+                "lat": lat, "lon": lng, "format": "jsonv2",
+                "zoom": 8,  # admin level ~ state/province granularity
+                "addressdetails": 1,
+            },
+            headers={
+                # Nominatim's usage policy requires an identifying
+                # User-Agent with contact info — replace with a real
+                # contact email/domain before deploying this.
+                "User-Agent": "GeoAnalyzerX/1.0 (contact: contact@geoanalyzerx.example)"
+            },
+            timeout=6,
+        )
+        if resp.status_code != 200:
+            print(f"Reverse geocode failed: {resp.status_code} {resp.text[:200]}")
+            return ''
+        addr = (resp.json() or {}).get("address", {}) or {}
+        state = (
+            addr.get("state") or addr.get("region") or addr.get("province")
+            or addr.get("state_district") or ''
+        )
+        return state
+    except Exception as e:
+        print("Reverse geocode error:", e)
+        return ''
 
 # ── Health ────────────────────────────────────────────────
 @app.errorhandler(413)
@@ -2217,10 +2337,18 @@ def upload_scene():
     if rate_limited("scene_upload", str(user_id), max_attempts=30, window_seconds=60):
         return jsonify({"error": "Too many requests, please slow down."}), 429
 
-    # If state is missing but we have coords and country is Australia, detect from coords
-    if not state and country == 'Australia' and lat and lng:
-        state = get_aus_state_from_coords(lat, lng)
-        print(f"State from coords: {state}")
+    # If state is missing but we have coords, try to detect it.
+    # Australia keeps its existing hand-verified bounding-box check first
+    # (fast, no network call). Every other country — and Australia too, as
+    # a safety net if the box check somehow misses — falls through to a
+    # real reverse-geocoding lookup that works generically for any
+    # country, instead of just silently staying blank like before.
+    if not state and lat and lng:
+        if country == 'Australia':
+            state = get_aus_state_from_coords(lat, lng)
+        if not state:
+            state = get_state_from_coords(lat, lng, country)
+        print(f"State from coords: {state!r} (country={country})")
 
     if not image_b64 or not country:
         return jsonify({"error": "image and country required"}), 400
@@ -2256,7 +2384,7 @@ def upload_scene():
     if not SUPABASE_URL:
         return jsonify({"error": "Cloud storage not configured"}), 503
 
-    region = classify_region(lat, lng, state)
+    region = classify_region(lat, lng, state, country)
 
     # Resolve contributor user id from token if provided
     contributor_id = None
