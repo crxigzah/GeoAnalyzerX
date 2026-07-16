@@ -640,20 +640,58 @@ def get_state_from_coords(lat, lng, country=None):
 # restarts.)
 _country_outline_cache = {}
 
+def _stitch_rings(way_point_lists):
+    """Stitch a list of way point-lists (each a list of (lon, lat) tuples)
+    end-to-end into one or more closed rings, by matching shared
+    endpoints. This is how OSM multipolygon relations are meant to be
+    assembled — a relation's "outer" role is often split across several
+    separate ways rather than one continuous one. Best-effort: works
+    reliably for simple single-outline islands; won't perfectly handle
+    unusual/complex multi-part geometry, but should be good enough here
+    since every one of these 12 territories is some kind of island or
+    island group.
+    """
+    segments = [list(w) for w in way_point_lists if len(w) >= 2]
+    rings = []
+    while segments:
+        ring = segments.pop(0)
+        changed = True
+        while changed and segments:
+            changed = False
+            for i, seg in enumerate(segments):
+                if ring[-1] == seg[0]:
+                    ring.extend(seg[1:]); segments.pop(i); changed = True; break
+                if ring[-1] == seg[-1]:
+                    ring.extend(list(reversed(seg))[1:]); segments.pop(i); changed = True; break
+                if ring[0] == seg[-1]:
+                    ring[0:0] = seg[:-1]; segments.pop(i); changed = True; break
+                if ring[0] == seg[0]:
+                    ring[0:0] = list(reversed(seg))[:-1]; segments.pop(i); changed = True; break
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])  # force-close if endpoints didn't quite meet
+        rings.append(ring)
+    return rings
+
 @app.route("/geo/country-outline")
 def geo_country_outline():
-    """Returns a GeoJSON boundary polygon for a country/territory name,
-    via OpenStreetMap's Nominatim. Built specifically for small
-    territories that geoBoundaries doesn't track (it only covers the 195
-    UN member states plus Greenland, Taiwan, Niue, and Kosovo) — things
-    like American Samoa, Christmas Island, Jersey, etc. still have real
-    OSM administrative boundary relations even though no dedicated
-    per-country boundary dataset includes them.
+    """Returns a GeoJSON boundary polygon for a small territory's actual
+    physical landmass, via OpenStreetMap's Overpass API. Deliberately
+    targets place=island / natural=coastline tags rather than the
+    administrative boundary relation — the latter usually extends out to
+    the territory's full jurisdiction, including its territorial sea
+    (commonly ~12 nautical miles offshore for island territories), which
+    renders as an oversized, smoothed-out blob rather than the island's
+    actual coastline. All 12 of the small territories this is used for
+    are islands or island groups, so this tagging approach should apply
+    to each of them, though multi-island territories (e.g. the U.S.
+    Virgin Islands) may not have one single feature under the combined
+    territory name — those fall through to "not found" and the caller
+    falls back further to the globe+marker view.
 
     This has to live server-side rather than being called directly from
-    region-map.html's JavaScript: Nominatim's usage policy requires an
-    identifying User-Agent, and browsers block client-side JS from
-    setting that header at all.
+    region-map.html's JavaScript: both Nominatim's and Overpass's usage
+    policies expect an identifying User-Agent, which browsers block
+    client-side JS from setting at all.
     """
     def respond(payload, status=200):
         # Explicit no-cache headers on every response from this route —
@@ -678,82 +716,90 @@ def geo_country_outline():
             return respond({"error": "not found"}, 404)
         return respond(cached)
 
+    escaped = name.replace('"', '\\"')
+    query = (
+        '[out:json][timeout:25];'
+        '('
+        f'way["place"="island"]["name"="{escaped}"];'
+        f'way["natural"="coastline"]["name"="{escaped}"];'
+        f'relation["place"="island"]["name"="{escaped}"];'
+        ');'
+        'out geom;'
+    )
+
     try:
         import requests
-        resp = requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={
-                "q": name,
-                "format": "geojson",
-                "polygon_geojson": 1,
-                "polygon_threshold": 0.0001,  # ~11m — these are all small territories, so even full coastline detail is a tiny payload
-                "limit": 5,  # look past the top match — see below
-            },
+        resp = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query},
             headers={
                 # Same requirement as get_state_from_coords above —
                 # replace with a real contact email/domain before
                 # deploying this.
                 "User-Agent": "GeoAnalyzerX/1.0 (contact: contact@geoanalyzerx.example)"
             },
-            timeout=8,
+            timeout=30,
         )
         if resp.status_code != 200:
-            print(f"Country outline fetch failed: {resp.status_code} {resp.text[:200]}")
+            print(f"Overpass fetch failed: {resp.status_code} {resp.text[:200]}")
             _country_outline_cache[cache_key] = None
             return respond({"error": "upstream error"}, 502)
 
         data = resp.json() or {}
-        features = data.get("features") or []
+        elements = data.get("elements") or []
 
         if request.args.get("debug") == "1":
             # Visit this URL directly in a browser
             # (…/geo/country-outline?name=Christmas%20Island&debug=1) to
-            # see exactly what Nominatim returned, bypassing the
-            # frontend and any caching questions entirely.
+            # see exactly what Overpass returned, bypassing the frontend
+            # and any caching questions entirely.
             return respond({
                 "query": name,
-                "candidate_count": len(features),
-                "candidates": [
+                "element_count": len(elements),
+                "elements": [
                     {
-                        "class_or_category": (f.get("properties") or {}).get("class") or (f.get("properties") or {}).get("category"),
-                        "type": (f.get("properties") or {}).get("type"),
-                        "display_name": (f.get("properties") or {}).get("display_name"),
-                        "geometry_type": (f.get("geometry") or {}).get("type"),
+                        "type": el.get("type"),
+                        "tags": el.get("tags"),
+                        "point_count": len(el.get("geometry") or []),
+                        "member_count": len(el.get("members") or []),
                     }
-                    for f in features
+                    for el in elements
                 ],
             })
 
-        # Nominatim's top match for a plain place-name query is often a
-        # "place" node (a populated-place marker), not the actual
-        # administrative boundary relation — and when polygon_geojson is
-        # requested for one of those, it can return a synthetic circle
-        # sized by the place's importance/population rather than its
-        # real coastline (this is what produced the blobby "potato"
-        # shape for Christmas Island). Only a genuine administrative
-        # boundary relation is trustworthy, so skip past anything else.
-        # Nominatim's docs show this field named "class" in some
-        # versions/outputs and "category" in others, so check both
-        # rather than betting on one.
-        def is_admin_boundary(f):
-            props = f.get("properties") or {}
-            cls = props.get("class") or props.get("category")
-            return cls == "boundary" and props.get("type") == "administrative"
+        polygons = []  # each entry: [ring] where ring is a list of [lon, lat]
 
-        feature = next(
-            (f for f in features if f.get("geometry") and is_admin_boundary(f)),
-            None
-        )
-        if not feature:
-            candidate_info = [
-                ((f.get("properties") or {}).get("class") or (f.get("properties") or {}).get("category"),
-                 (f.get("properties") or {}).get("type"))
-                for f in features
-            ]
-            print(f"No admin-boundary match for {name!r}. Candidates: {candidate_info}")
+        for el in elements:
+            if el.get("type") == "way" and el.get("geometry"):
+                pts = [[p["lon"], p["lat"]] for p in el["geometry"]]
+                if len(pts) >= 4 and pts[0] == pts[-1]:
+                    polygons.append([pts])
+            elif el.get("type") == "relation" and el.get("members"):
+                outer_ways = [
+                    [(p["lon"], p["lat"]) for p in m["geometry"]]
+                    for m in el["members"]
+                    if m.get("role") == "outer" and m.get("geometry")
+                ]
+                if outer_ways:
+                    for ring in _stitch_rings(outer_ways):
+                        ring_coords = [list(pt) for pt in ring]
+                        if len(ring_coords) >= 4:
+                            polygons.append([ring_coords])
+
+        if not polygons:
             _country_outline_cache[cache_key] = None
             return respond({"error": "not found"}, 404)
 
+        geometry = (
+            {"type": "Polygon", "coordinates": polygons[0]}
+            if len(polygons) == 1
+            else {"type": "MultiPolygon", "coordinates": polygons}
+        )
+        feature = {
+            "type": "Feature",
+            "properties": {"name": name, "source": "overpass"},
+            "geometry": geometry,
+        }
         _country_outline_cache[cache_key] = feature
         return respond(feature)
     except Exception as e:
