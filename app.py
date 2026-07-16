@@ -655,16 +655,28 @@ def geo_country_outline():
     identifying User-Agent, and browsers block client-side JS from
     setting that header at all.
     """
+    def respond(payload, status=200):
+        # Explicit no-cache headers on every response from this route —
+        # if this app sits behind a CDN or reverse proxy (common on
+        # Render), a cached response there would keep being served
+        # unchanged to every visitor regardless of app redeploys or a
+        # given browser's own cache being cleared.
+        resp = jsonify(payload)
+        resp.status_code = status
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
+
     name = (request.args.get("name") or "").strip()
     if not name:
-        return jsonify({"error": "name required"}), 400
+        return respond({"error": "name required"}, 400)
 
     cache_key = name.lower()
     if cache_key in _country_outline_cache:
         cached = _country_outline_cache[cache_key]
         if cached is None:
-            return jsonify({"error": "not found"}), 404
-        return jsonify(cached)
+            return respond({"error": "not found"}, 404)
+        return respond(cached)
 
     try:
         import requests
@@ -688,10 +700,29 @@ def geo_country_outline():
         if resp.status_code != 200:
             print(f"Country outline fetch failed: {resp.status_code} {resp.text[:200]}")
             _country_outline_cache[cache_key] = None
-            return jsonify({"error": "upstream error"}), 502
+            return respond({"error": "upstream error"}, 502)
 
         data = resp.json() or {}
         features = data.get("features") or []
+
+        if request.args.get("debug") == "1":
+            # Visit this URL directly in a browser
+            # (…/geo/country-outline?name=Christmas%20Island&debug=1) to
+            # see exactly what Nominatim returned, bypassing the
+            # frontend and any caching questions entirely.
+            return respond({
+                "query": name,
+                "candidate_count": len(features),
+                "candidates": [
+                    {
+                        "class_or_category": (f.get("properties") or {}).get("class") or (f.get("properties") or {}).get("category"),
+                        "type": (f.get("properties") or {}).get("type"),
+                        "display_name": (f.get("properties") or {}).get("display_name"),
+                        "geometry_type": (f.get("geometry") or {}).get("type"),
+                    }
+                    for f in features
+                ],
+            })
 
         # Nominatim's top match for a plain place-name query is often a
         # "place" node (a populated-place marker), not the actual
@@ -714,14 +745,20 @@ def geo_country_outline():
             None
         )
         if not feature:
+            candidate_info = [
+                ((f.get("properties") or {}).get("class") or (f.get("properties") or {}).get("category"),
+                 (f.get("properties") or {}).get("type"))
+                for f in features
+            ]
+            print(f"No admin-boundary match for {name!r}. Candidates: {candidate_info}")
             _country_outline_cache[cache_key] = None
-            return jsonify({"error": "not found"}), 404
+            return respond({"error": "not found"}, 404)
 
         _country_outline_cache[cache_key] = feature
-        return jsonify(feature)
+        return respond(feature)
     except Exception as e:
         print("Country outline fetch error:", e)
-        return jsonify({"error": str(e)}), 502
+        return respond({"error": str(e)}, 502)
 
 # ── Health ────────────────────────────────────────────────
 @app.errorhandler(413)
