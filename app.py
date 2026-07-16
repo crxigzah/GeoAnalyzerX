@@ -53,6 +53,10 @@ ADMIN_KEY      = os.environ.get("ADMIN_KEY", "")
 # this env var on Render. Notifications are skipped (not an error) if
 # this isn't set.
 DISCORD_META_REPORT_WEBHOOK = os.environ.get("DISCORD_META_REPORT_WEBHOOK", "")
+# Same idea, for bug reports submitted from index.html's "Bug Reports"
+# contact card. Can point at the same webhook URL as above if you'd
+# rather have both in one channel, or a different one to keep them separate.
+DISCORD_BUG_REPORT_WEBHOOK = os.environ.get("DISCORD_BUG_REPORT_WEBHOOK", "")
 
 def send_email(to, subject, html):
     if not RESEND_API_KEY:
@@ -2013,6 +2017,33 @@ def notify_discord_meta_report(country, description, username, email):
     except Exception as e:
         print("Discord meta report webhook error:", e)
 
+def notify_discord_bug_report(name, email, message):
+    """Best-effort Discord webhook ping for a new bug report submitted
+    via index.html's 'Bug Reports' contact card. Never raises — same
+    reasoning as notify_discord_meta_report above."""
+    if not DISCORD_BUG_REPORT_WEBHOOK:
+        return
+    reporter = name if name else "Anonymous"
+    if email:
+        reporter += f" ({email})"
+    try:
+        http_requests.post(
+            DISCORD_BUG_REPORT_WEBHOOK,
+            json={
+                "embeds": [{
+                    "title": "🐛 New Bug Report",
+                    "color": 0xFF6B6B,
+                    "fields": [
+                        {"name": "Reported by", "value": reporter},
+                        {"name": "Description", "value": message[:1000]},
+                    ],
+                }]
+            },
+            timeout=5,
+        )
+    except Exception as e:
+        print("Discord bug report webhook error:", e)
+
 @app.route("/guess/stats", methods=["POST", "OPTIONS"])
 def guess_stats():
     """Per-country region-guessing accuracy for the logged-in user — the
@@ -2388,6 +2419,9 @@ def forms_submit():
         conn.close()
     except Exception as e:
         return safe_error(e)
+
+    if form_type == "bug":
+        notify_discord_bug_report(name, email, message)
 
     support_email = os.environ.get("SUPPORT_EMAIL", "support@geoanalyzerx.com")
     label = FORM_TYPES[form_type]
