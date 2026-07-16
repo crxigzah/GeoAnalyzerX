@@ -631,6 +631,78 @@ def get_state_from_coords(lat, lng, country=None):
         print("Reverse geocode error:", e)
         return ''
 
+# In-memory cache for /geo/country-outline lookups, keyed by normalized
+# place name. Nominatim's usage policy asks that requests not be
+# repeated unnecessarily — this avoids re-fetching the same small
+# territory's outline on every click within the process's lifetime.
+# (Resets on server restart — fine for this, since it's just sparing
+# Nominatim redundant traffic, not something that needs to survive
+# restarts.)
+_country_outline_cache = {}
+
+@app.route("/geo/country-outline")
+def geo_country_outline():
+    """Returns a GeoJSON boundary polygon for a country/territory name,
+    via OpenStreetMap's Nominatim. Built specifically for small
+    territories that geoBoundaries doesn't track (it only covers the 195
+    UN member states plus Greenland, Taiwan, Niue, and Kosovo) — things
+    like American Samoa, Christmas Island, Jersey, etc. still have real
+    OSM administrative boundary relations even though no dedicated
+    per-country boundary dataset includes them.
+
+    This has to live server-side rather than being called directly from
+    region-map.html's JavaScript: Nominatim's usage policy requires an
+    identifying User-Agent, and browsers block client-side JS from
+    setting that header at all.
+    """
+    name = (request.args.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+
+    cache_key = name.lower()
+    if cache_key in _country_outline_cache:
+        cached = _country_outline_cache[cache_key]
+        if cached is None:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(cached)
+
+    try:
+        import requests
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={
+                "q": name,
+                "format": "geojson",
+                "polygon_geojson": 1,
+                "polygon_threshold": 0.005,  # simplify a bit; keeps payloads small without losing the island's recognizable shape
+                "limit": 1,
+            },
+            headers={
+                # Same requirement as get_state_from_coords above —
+                # replace with a real contact email/domain before
+                # deploying this.
+                "User-Agent": "GeoAnalyzerX/1.0 (contact: contact@geoanalyzerx.example)"
+            },
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            print(f"Country outline fetch failed: {resp.status_code} {resp.text[:200]}")
+            _country_outline_cache[cache_key] = None
+            return jsonify({"error": "upstream error"}), 502
+
+        data = resp.json() or {}
+        features = data.get("features") or []
+        if not features or not features[0].get("geometry"):
+            _country_outline_cache[cache_key] = None
+            return jsonify({"error": "not found"}), 404
+
+        feature = features[0]
+        _country_outline_cache[cache_key] = feature
+        return jsonify(feature)
+    except Exception as e:
+        print("Country outline fetch error:", e)
+        return jsonify({"error": str(e)}), 502
+
 # ── Health ────────────────────────────────────────────────
 @app.errorhandler(413)
 def too_large(e):
