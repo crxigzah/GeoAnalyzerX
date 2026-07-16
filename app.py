@@ -674,8 +674,8 @@ def geo_country_outline():
                 "q": name,
                 "format": "geojson",
                 "polygon_geojson": 1,
-                "polygon_threshold": 0.0001,  # ~11m — these are all small territories, so even full coastline detail is a tiny payload; a coarser value (0.005/~500m) was collapsing islands like Christmas Island into a shapeless blob
-                "limit": 1,
+                "polygon_threshold": 0.0001,  # ~11m — these are all small territories, so even full coastline detail is a tiny payload
+                "limit": 5,  # look past the top match — see below
             },
             headers={
                 # Same requirement as get_state_from_coords above —
@@ -692,11 +692,31 @@ def geo_country_outline():
 
         data = resp.json() or {}
         features = data.get("features") or []
-        if not features or not features[0].get("geometry"):
+
+        # Nominatim's top match for a plain place-name query is often a
+        # "place" node (a populated-place marker), not the actual
+        # administrative boundary relation — and when polygon_geojson is
+        # requested for one of those, it can return a synthetic circle
+        # sized by the place's importance/population rather than its
+        # real coastline (this is what produced the blobby "potato"
+        # shape for Christmas Island). Only a genuine administrative
+        # boundary relation is trustworthy, so skip past anything else.
+        # Nominatim's docs show this field named "class" in some
+        # versions/outputs and "category" in others, so check both
+        # rather than betting on one.
+        def is_admin_boundary(f):
+            props = f.get("properties") or {}
+            cls = props.get("class") or props.get("category")
+            return cls == "boundary" and props.get("type") == "administrative"
+
+        feature = next(
+            (f for f in features if f.get("geometry") and is_admin_boundary(f)),
+            None
+        )
+        if not feature:
             _country_outline_cache[cache_key] = None
             return jsonify({"error": "not found"}), 404
 
-        feature = features[0]
         _country_outline_cache[cache_key] = feature
         return jsonify(feature)
     except Exception as e:
