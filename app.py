@@ -293,6 +293,16 @@ def init_db():
             correct_country TEXT NOT NULL,
             created_at TIMESTAMPTZ DEFAULT NOW())""")
         conn.run("CREATE INDEX IF NOT EXISTS idx_photo_quiz_type ON photo_quiz_images(quiz_type)")
+        conn.run("""CREATE TABLE IF NOT EXISTS meta_reports (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            country TEXT NOT NULL,
+            description TEXT NOT NULL,
+            user_id INT,
+            username TEXT,
+            email TEXT,
+            status TEXT DEFAULT 'open',
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_meta_reports_status ON meta_reports(status)")
         conn.close()
         print("DB init OK")
     except Exception as e:
@@ -1919,6 +1929,49 @@ def log_guess_result():
         conn.run("""INSERT INTO guess_results (user_id, country, correct_region, guessed_region, is_correct)
             VALUES (:uid, :country, :cr, :gr, :ic)""",
             uid=user_id, country=country, cr=correct_region, gr=guessed_region, ic=is_correct)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/meta/report", methods=["POST", "OPTIONS"])
+def report_meta():
+    """Lets a user flag a problem with a country guide from metas.html's
+    'Report a meta' button. Works whether or not the person is logged in
+    — a token in the body is optional here (unlike /guess/log above,
+    which requires one), since anonymous visitors should still be able
+    to report an issue."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    if rate_limited("meta_report", client_ip(), max_attempts=10, window_seconds=300):
+        return jsonify({"error": "Too many reports — please try again in a few minutes."}), 429
+    d = request.json or {}
+    country = (d.get("country") or "").strip()
+    description = (d.get("description") or "").strip()
+    if not country:
+        return jsonify({"error": "country required"}), 400
+    if not description:
+        return jsonify({"error": "Please describe the issue"}), 400
+    if len(description) > 2000:
+        return jsonify({"error": "Description is too long"}), 400
+
+    token = d.get("token", "")
+    user_id, tier, username = get_user_from_token(token) if token else (None, None, None)
+    email = None
+    if user_id:
+        try:
+            conn = get_db()
+            rows = conn.run("SELECT email FROM users WHERE id=:uid", uid=user_id)
+            conn.close()
+            if rows:
+                email = rows[0][0]
+        except Exception:
+            pass  # not worth failing the whole report over — it'll just be logged without an email
+
+    try:
+        conn = get_db()
+        conn.run("""INSERT INTO meta_reports (country, description, user_id, username, email)
+            VALUES (:country, :description, :uid, :username, :email)""",
+            country=country, description=description, uid=user_id, username=username, email=email)
         conn.close()
         return jsonify({"success": True})
     except Exception as e:
@@ -3913,6 +3966,53 @@ def admin_dashboard():
         "chats": [{"username":r[0],"correct_location":r[1],"guessed_location":r[2],
                    "user_message":r[3],"ai_reply":r[4],"created_at":str(r[5])} for r in chats]
     })
+
+@app.route("/admin/meta_reports", methods=["GET","OPTIONS"])
+def admin_meta_reports():
+    """Lists 'Report a meta' submissions from metas.html, newest first.
+    Pass ?status=open or ?status=resolved to filter; omit for everything."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    status_filter = request.args.get("status")
+    try:
+        conn = get_db()
+        if status_filter:
+            rows = conn.run("""SELECT id, country, description, user_id, username, email, status, created_at
+                FROM meta_reports WHERE status=:s ORDER BY created_at DESC""", s=status_filter)
+        else:
+            rows = conn.run("""SELECT id, country, description, user_id, username, email, status, created_at
+                FROM meta_reports ORDER BY created_at DESC""")
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+    return jsonify({"reports": [
+        {"id": str(r[0]), "country": r[1], "description": r[2], "user_id": r[3],
+         "username": r[4], "email": r[5], "status": r[6], "created_at": str(r[7])}
+        for r in rows
+    ]})
+
+@app.route("/admin/meta_reports/resolve", methods=["POST","OPTIONS"])
+def admin_resolve_meta_report():
+    """Marks a meta report resolved (or reopens it, if resolved=false is
+    passed) — lets you use the report list as an actual to-do list rather
+    than it just growing forever."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    report_id = d.get("id")
+    if not report_id:
+        return jsonify({"error": "id required"}), 400
+    resolved = d.get("resolved", True)
+    new_status = "resolved" if resolved else "open"
+    try:
+        conn = get_db()
+        conn.run("UPDATE meta_reports SET status=:s WHERE id=:id", s=new_status, id=report_id)
+        conn.close()
+        return jsonify({"success": True, "status": new_status})
+    except Exception as e:
+        return safe_error(e)
 
 @app.route("/admin/poll", methods=["GET","OPTIONS"])
 def admin_poll():
