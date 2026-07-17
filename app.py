@@ -3412,27 +3412,36 @@ def require_admin():
     header or 'key' query param for SSE) AND a valid session token (via X-Admin-Token
     header or 'token' query param for SSE). Keeping these out of the body means they
     never end up in server access logs."""
+    ok, err, _admin = require_admin_identity()
+    return ok, err
+
+def require_admin_identity():
+    """Same checks as require_admin(), but also returns the requesting admin's own
+    (id, username) as a third value — (ok, error_response, admin_or_None). Lets
+    endpoints resolve "the admin making this request" server-side (from their
+    verified session token) instead of trusting a client-supplied id, which can go
+    stale/missing on the frontend (e.g. an old session predating some field)."""
     if rate_limited("admin_check", client_ip(), max_attempts=60, window_seconds=60):
-        return False, (jsonify({"error":"Too many requests"}), 429)
+        return False, (jsonify({"error":"Too many requests"}), 429), None
     # Accept from headers (normal requests) or query params (SSE — EventSource can't set headers)
     admin_key   = request.headers.get("X-Admin-Key")   or request.args.get("key", "")
     admin_token = request.headers.get("X-Admin-Token") or request.args.get("token", "")
     if not ADMIN_KEY or admin_key != ADMIN_KEY:
-        return False, (jsonify({"error":"Forbidden"}), 403)
+        return False, (jsonify({"error":"Forbidden"}), 403), None
     if not admin_token:
-        return False, (jsonify({"error":"Admin login required"}), 401)
+        return False, (jsonify({"error":"Admin login required"}), 401), None
     try:
         conn = get_db()
-        rows = conn.run("""SELECT u.is_admin FROM users u
+        rows = conn.run("""SELECT u.id, u.username, u.is_admin FROM users u
             JOIN sessions s ON s.user_id=u.id
             WHERE s.token=:t AND s.expires_at>NOW()""", t=admin_token)
         conn.close()
     except Exception as e:
         print("Server error:", repr(e))
-        return False, (jsonify({"error": "Something went wrong"}), 500)
-    if not rows or not rows[0][0]:
-        return False, (jsonify({"error":"Account is not an admin"}), 403)
-    return True, None
+        return False, (jsonify({"error": "Something went wrong"}), 500), None
+    if not rows or not rows[0][2]:
+        return False, (jsonify({"error":"Account is not an admin"}), 403), None
+    return True, None, {"id": rows[0][0], "username": rows[0][1]}
 
 @app.route("/admin/login", methods=["POST","OPTIONS"])
 def admin_login():
@@ -4577,16 +4586,26 @@ def admin_list_admins():
 @app.route("/admin/tickets/<ticket_id>/assign", methods=["POST","OPTIONS"])
 def admin_assign_ticket(ticket_id):
     """Assigns a ticket to an admin. admin_id may be null/omitted to
-    unassign. display_name lets the assigning admin choose what name
-    shows up on the ticket and on any replies they send afterward
-    (e.g. a first name instead of their raw account username) — see
-    admin_reply_ticket above, which uses this as the default sender name."""
+    unassign. Pass self_assign=true (from the "Assign to me" flow) to assign
+    to whichever admin the session token belongs to, resolved server-side —
+    this avoids depending on the frontend already knowing its own admin id,
+    which can be missing on an older/partially-restored session.
+    display_name lets the assigning admin choose what name shows up on the
+    ticket and on any replies they send afterward (e.g. a first name instead
+    of their raw account username) — see admin_reply_ticket above, which
+    uses this as the default sender name."""
     if request.method == "OPTIONS": return jsonify({}), 200
-    ok, err = require_admin()
+    ok, err, requester = require_admin_identity()
     if not ok: return err
     d = request.json or {}
-    admin_id = d.get("admin_id")
     display_name = (d.get("display_name") or "").strip() or None
+    if d.get("self_assign"):
+        # "Assign to me" — resolve the admin from their verified session token
+        # rather than trusting a client-supplied id, which can be missing/stale
+        # on the frontend (e.g. an older session predating this field).
+        admin_id = requester["id"]
+    else:
+        admin_id = d.get("admin_id")
     try:
         conn = get_db()
         if admin_id:
@@ -4597,11 +4616,13 @@ def admin_assign_ticket(ticket_id):
             name = display_name or rows[0][0]
             conn.run("""UPDATE tickets SET assigned_admin_id=:aid, assigned_admin_name=:name, updated_at=NOW()
                 WHERE id=:tid""", aid=admin_id, name=name, tid=ticket_id)
+            conn.close()
+            return jsonify({"success": True, "assigned_admin_id": admin_id, "assigned_admin_name": name})
         else:
             conn.run("""UPDATE tickets SET assigned_admin_id=NULL, assigned_admin_name=NULL, updated_at=NOW()
                 WHERE id=:tid""", tid=ticket_id)
-        conn.close()
-        return jsonify({"success": True})
+            conn.close()
+            return jsonify({"success": True, "assigned_admin_id": None, "assigned_admin_name": None})
     except Exception as e:
         return safe_error(e)
 
