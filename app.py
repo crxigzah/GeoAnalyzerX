@@ -2143,6 +2143,8 @@ def create_ticket():
                 email = rows[0][0]
         except Exception:
             pass
+    elif not email:
+        return jsonify({"error": "Email required"}), 400
 
     try:
         conn = get_db()
