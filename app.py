@@ -57,6 +57,11 @@ DISCORD_META_REPORT_WEBHOOK = os.environ.get("DISCORD_META_REPORT_WEBHOOK", "")
 # contact card. Can point at the same webhook URL as above if you'd
 # rather have both in one channel, or a different one to keep them separate.
 DISCORD_BUG_REPORT_WEBHOOK = os.environ.get("DISCORD_BUG_REPORT_WEBHOOK", "")
+# For general support tickets that aren't a bug or meta report —
+# feature requests, billing, account questions, and anything else. Set
+# this to a new Discord channel's webhook so those don't get lumped into
+# the bug/meta channels above.
+DISCORD_TICKET_WEBHOOK = os.environ.get("DISCORD_TICKET_WEBHOOK", "")
 
 def send_email(to, subject, html):
     if not RESEND_API_KEY:
@@ -2067,15 +2072,20 @@ def notify_discord_bug_report(name, email, message):
 TICKET_CATEGORIES = {"bug", "feature", "meta", "billing", "account", "other"}
 
 def notify_discord_ticket(event, ticket_id, subject, category, sender_name, message):
-    """Best-effort Discord webhook ping for ticket activity — fires to
-    every webhook URL that's actually configured (both the old meta-
-    report and bug-report ones), so a mod watching either channel sees
-    it regardless of the ticket's category. event is 'new' or 'reply'.
-    Never raises — same reasoning as the other notify_discord_* helpers
-    above; a Discord outage shouldn't affect whether the ticket itself
-    saves correctly."""
-    webhooks = [w for w in (DISCORD_META_REPORT_WEBHOOK, DISCORD_BUG_REPORT_WEBHOOK) if w]
-    if not webhooks:
+    """Best-effort Discord webhook ping for ticket activity, routed to
+    the right channel by category: bug reports go to the bug channel,
+    meta reports go to the meta channel, and everything else (feature,
+    billing, account, other) goes to the general ticket channel. event
+    is 'new' or 'reply'. Never raises — same reasoning as the other
+    notify_discord_* helpers above; a Discord outage shouldn't affect
+    whether the ticket itself saves correctly."""
+    if category == "bug":
+        webhook_url = DISCORD_BUG_REPORT_WEBHOOK
+    elif category == "meta":
+        webhook_url = DISCORD_META_REPORT_WEBHOOK
+    else:
+        webhook_url = DISCORD_TICKET_WEBHOOK
+    if not webhook_url:
         return
     title = "🎫 New Ticket" if event == "new" else "💬 New Reply on Ticket"
     payload = {
@@ -2091,11 +2101,10 @@ def notify_discord_ticket(event, ticket_id, subject, category, sender_name, mess
             ],
         }]
     }
-    for webhook_url in webhooks:
-        try:
-            http_requests.post(webhook_url, json=payload, timeout=5)
-        except Exception as e:
-            print("Discord ticket webhook error:", e)
+    try:
+        http_requests.post(webhook_url, json=payload, timeout=5)
+    except Exception as e:
+        print("Discord ticket webhook error:", e)
 
 @app.route("/tickets/create", methods=["POST", "OPTIONS"])
 def create_ticket():
