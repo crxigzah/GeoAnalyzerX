@@ -1,5 +1,5 @@
 """
-GeoAnalyzerX Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
+5kable Platform API — v2.0 with Cloud Scene Library (Cloudflare R2)
 """
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
@@ -45,7 +45,7 @@ DATABASE_URL       = os.environ.get("DATABASE_URL", "")
 import requests as http_requests
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-EMAIL_FROM     = os.environ.get("EMAIL_FROM", "GeoAnalyzerX <noreply@geoanalyzerx.net>")
+EMAIL_FROM     = os.environ.get("EMAIL_FROM", "5kable <noreply@geoanalyzerx.net>")
 ADMIN_KEY      = os.environ.get("ADMIN_KEY", "")
 # Pings a Discord channel when a new "Report a Meta Issue" submission
 # comes in from metas.html. Create one via the target channel's Settings
@@ -82,15 +82,15 @@ def send_email(to, subject, html):
 def send_verification_email(email, username, code):
     html = f"""
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#08080f;color:#e0e0f0;border-radius:16px;">
-      <h1 style="color:#00c9a7;font-size:20px;">Verify your GeoAnalyzerX account</h1>
+      <h1 style="color:#00c9a7;font-size:20px;">Verify your 5kable account</h1>
       <p style="color:#8888aa;font-size:14px;">Hi {username}, use the code below to verify your email and activate your account.</p>
       <div style="background:#1a1a2e;border:1px solid #2a2a3e;border-radius:12px;padding:20px;text-align:center;margin:20px 0;">
         <div style="font-size:32px;font-weight:800;letter-spacing:8px;color:#00c9a7;">{code}</div>
       </div>
-      <p style="color:#5a5a7a;font-size:12px;">This code expires in 15 minutes. If you didn't sign up for GeoAnalyzerX, you can ignore this email.</p>
+      <p style="color:#5a5a7a;font-size:12px;">This code expires in 15 minutes. If you didn't sign up for 5kable, you can ignore this email.</p>
     </div>
     """
-    return send_email(email, "Verify your GeoAnalyzerX account", html)
+    return send_email(email, "Verify your 5kable account", html)
 FRONTEND_URL       = os.environ.get("FRONTEND_URL", "https://geoanalyzerx.net")
 SUPABASE_URL       = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY       = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -682,7 +682,7 @@ def get_state_from_coords(lat, lng, country=None):
                 # Nominatim's usage policy requires an identifying
                 # User-Agent with contact info — replace with a real
                 # contact email/domain before deploying this.
-                "User-Agent": "GeoAnalyzerX/1.0 (contact: contact@geoanalyzerx.example)"
+                "User-Agent": "5kable/1.0 (contact: contact@5kable.example)"
             },
             timeout=6,
         )
@@ -804,7 +804,7 @@ def geo_country_outline():
                 # Same requirement as get_state_from_coords above —
                 # replace with a real contact email/domain before
                 # deploying this.
-                "User-Agent": "GeoAnalyzerX/1.0 (contact: contact@geoanalyzerx.example)"
+                "User-Agent": "5kable/1.0 (contact: contact@5kable.example)"
             },
             timeout=30,
         )
@@ -1270,7 +1270,7 @@ def setup_2fa():
         return safe_error(e)
     secret = pyotp.random_base32()
     totp   = pyotp.TOTP(secret)
-    uri    = totp.provisioning_uri(name=email, issuer_name="GeoAnalyzerX")
+    uri    = totp.provisioning_uri(name=email, issuer_name="5kable")
     qr = qrcode.QRCode(box_size=6, border=2)
     qr.add_data(uri)
     qr.make(fit=True)
@@ -1452,7 +1452,7 @@ DETAIL: [2-3 sentences based only on what is actually visible]"""
 
 def get_guide_context(country, max_chars=1000):
     """Pulls real facts straight out of this country's own written guide
-    (heading/text/tip/warning/img-text blocks), if one exists, so GeoX's
+    (heading/text/tip/warning/img-text blocks), if one exists, so 5K's
     clues are grounded in the site's own verified guide content rather
     than generic model knowledge alone."""
     if not country:
@@ -1613,7 +1613,7 @@ def ai_analyse():
 
 @app.route("/ai/scene_clues", methods=["POST", "OPTIONS"])
 def ai_scene_clues():
-    """Powers GeoX chat BEFORE a guess has been made. Receives the
+    """Powers 5K chat BEFORE a guess has been made. Receives the
     round's REAL location (reverse-geocoded client-side) so its clue
     descriptions are grounded in fact rather than a blind guess from
     pixels alone — but the prompt enforces an absolute rule that the
@@ -1824,7 +1824,7 @@ def ai_chat():
         return jsonify({
             "error": "Pro required",
             "code": "pro",
-            "message": "GeoX chat is a Pro feature. Upgrade to Pro for unlimited AI chat."
+            "message": "5K chat is a Pro feature. Upgrade to Pro for unlimited AI chat."
         }), 403
 
     try:
@@ -1844,7 +1844,7 @@ def ai_chat():
         is_post_guess = bool(guessed)  # "THE PLAYER GUESSED:" line present = a real completed round
 
         if is_post_guess:
-            system = """You are GeoX, an expert GeoGuessr analyst who teaches players after they guessed WRONG.
+            system = """You are 5K, an expert GeoGuessr analyst who teaches players after they guessed WRONG.
 
 YOUR JOB IS TO TEACH, NOT TO PLEASE. The player already guessed incorrectly — your role is to help them understand WHY they were wrong and what they should have seen. You know the correct location with certainty.
 
@@ -1866,7 +1866,7 @@ The context you receive includes the CORRECT LOCATION, the dead giveaway clue, k
         elif has_context:
             map_country_known = 'MAP COUNTRY (already known to the player, not secret):' in last_analysis
             if map_country_known:
-                system = """You are GeoX, a GeoGuessr analyst helping a player narrow down a scene BEFORE they've locked in a guess. No guess has been made yet on this round.
+                system = """You are 5K, a GeoGuessr analyst helping a player narrow down a scene BEFORE they've locked in a guess. No guess has been made yet on this round.
 
 The player has already selected a specific country map (not World mode) — that country is stated in the context below and is NOT a secret, since they chose it themselves.
 
@@ -1889,7 +1889,7 @@ BE DIRECT, NOT SOCRATIC. Do not respond with clarifying questions like "what do 
 
 LENGTH — HARD RULE: Maximum 2 short sentences, roughly 40 words."""
             else:
-                system = """You are GeoX, a GeoGuessr analyst helping a player narrow down a scene BEFORE they've locked in a guess. No guess has been made yet on this round.
+                system = """You are 5K, a GeoGuessr analyst helping a player narrow down a scene BEFORE they've locked in a guess. No guess has been made yet on this round.
 
 YOU DO NOT KNOW THE ANSWER, AND EVEN IF YOU SUSPECT ONE, YOU MUST NEVER STATE IT — CORRECT OR INCORRECT. This is an absolute rule with zero exceptions: never write the name of any real country, region, state, city, continent, or other named place, anywhere in your response — not the true answer, not a guess, not an example, not even while "ruling something out." Naming ANY real place breaks this rule, whether it's right or wrong. Not even if the player directly asks "what region is this?" or "just tell me the country" — refuse and redirect to reasoning instead.
 
@@ -1907,7 +1907,7 @@ LENGTH — THIS IS A HARD RULE:
 
 The context below is a clue-only scene description with no location attached — treat it exactly as if you also don't know the answer."""
         else:
-            system = """You are GeoX, a GeoGuessr coach. There's no scene or location data available for this question — either the player isn't currently in a round, or the automatic scene analysis didn't succeed.
+            system = """You are 5K, a GeoGuessr coach. There's no scene or location data available for this question — either the player isn't currently in a round, or the automatic scene analysis didn't succeed.
 
 Tell them in ONE short sentence that you couldn't get a read on the current scene — suggest joining an active round and asking again — unless their message is a general GeoGuessr question you can just answer directly and briefly. Plain text only, no markdown."""
         user_content = f"{last_analysis[:900]}"
@@ -2668,7 +2668,7 @@ def forms_submit():
       <p><strong>Message:</strong><br>{message.replace(chr(10), '<br>')}</p>
       {f'<p><strong>Extra:</strong><br>{extra.replace(chr(10), "<br>")}</p>' if extra else ''}
     </div>"""
-    send_email(support_email, f"[GeoAnalyzerX Forms] New {label}", html)
+    send_email(support_email, f"[5kable Forms] New {label}", html)
 
     return jsonify({"success": True})
 
@@ -2828,10 +2828,10 @@ def ai_check_scene_quality(image_b64, country=None):
         # that entirely — the model has to commit to a specific
         # category rather than free text we'd have to parse for intent.
         if not passed and violation == 'none':
-            print(f"GeoAnalyzerX: scene quality check — overriding NO to YES, VIOLATION was 'none': {clean_reason!r}")
+            print(f"5kable: scene quality check — overriding NO to YES, VIOLATION was 'none': {clean_reason!r}")
             passed = True
             clean_reason = clean_reason + " (auto-corrected: AI said NO but flagged no actual violation)"
-        print(f"GeoAnalyzerX: scene quality check — passed={passed} | suspicious={suspicious} | raw response: {raw!r}")
+        print(f"5kable: scene quality check — passed={passed} | suspicious={suspicious} | raw response: {raw!r}")
         return passed, clean_reason, suspicious, suspicious_reason
     except Exception as e:
         print("Scene quality check error:", e)
@@ -4522,7 +4522,7 @@ def admin_reply_ticket(ticket_id):
         # Explicit admin_name in the request wins; otherwise fall back to
         # whoever this ticket is assigned to, so replies are consistently
         # attributed without the admin having to retype a name each time.
-        admin_name = (d.get("admin_name") or "").strip() or rows[0][0] or "GeoAnalyzerX Team"
+        admin_name = (d.get("admin_name") or "").strip() or rows[0][0] or "5kable Team"
         conn.run("""INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message)
             VALUES (:tid, 'admin', :sender, :message)""",
             tid=ticket_id, sender=admin_name, message=message)
