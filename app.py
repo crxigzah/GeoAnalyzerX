@@ -2245,7 +2245,8 @@ def get_ticket(ticket_id):
 def reply_ticket(ticket_id):
     """Adds a user reply to their own ticket. Reopens the ticket if it
     was previously marked resolved — a reply means it isn't actually
-    done from the user's side."""
+    done from the user's side. Closed tickets are final and reject
+    further replies (the user needs to open a new ticket instead)."""
     if request.method == "OPTIONS": return jsonify({}), 200
     d = request.json or {}
     token = d.get("token", "")
@@ -2259,14 +2260,17 @@ def reply_ticket(ticket_id):
         return jsonify({"error": "Message is too long"}), 400
     try:
         conn = get_db()
-        rows = conn.run("SELECT user_id, subject, category, ticket_number FROM tickets WHERE id=:tid", tid=ticket_id)
+        rows = conn.run("SELECT user_id, subject, category, ticket_number, status FROM tickets WHERE id=:tid", tid=ticket_id)
         if not rows:
             conn.close()
             return jsonify({"error": "Ticket not found"}), 404
         if rows[0][0] != user_id:
             conn.close()
             return jsonify({"error": "Not your ticket"}), 403
-        subject, category, ticket_number = rows[0][1], rows[0][2], rows[0][3]
+        subject, category, ticket_number, status = rows[0][1], rows[0][2], rows[0][3], rows[0][4]
+        if status == 'closed':
+            conn.close()
+            return jsonify({"error": "This ticket is closed and can no longer be replied to."}), 403
         conn.run("""INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message)
             VALUES (:tid, 'user', :sender, :message)""",
             tid=ticket_id, sender=username, message=message)
