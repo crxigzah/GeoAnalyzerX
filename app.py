@@ -2067,34 +2067,35 @@ def notify_discord_bug_report(name, email, message):
 TICKET_CATEGORIES = {"bug", "feature", "meta", "billing", "account", "other"}
 
 def notify_discord_ticket(event, ticket_id, subject, category, sender_name, message):
-    """Best-effort Discord webhook ping for ticket activity. Reuses the
-    same webhook already set up for meta reports, since this general
-    ticket system supersedes that one-way flow. event is 'new' or
-    'reply'. Never raises — same reasoning as the other notify_discord_*
-    helpers above."""
-    if not DISCORD_META_REPORT_WEBHOOK:
+    """Best-effort Discord webhook ping for ticket activity — fires to
+    every webhook URL that's actually configured (both the old meta-
+    report and bug-report ones), so a mod watching either channel sees
+    it regardless of the ticket's category. event is 'new' or 'reply'.
+    Never raises — same reasoning as the other notify_discord_* helpers
+    above; a Discord outage shouldn't affect whether the ticket itself
+    saves correctly."""
+    webhooks = [w for w in (DISCORD_META_REPORT_WEBHOOK, DISCORD_BUG_REPORT_WEBHOOK) if w]
+    if not webhooks:
         return
     title = "🎫 New Ticket" if event == "new" else "💬 New Reply on Ticket"
-    try:
-        http_requests.post(
-            DISCORD_META_REPORT_WEBHOOK,
-            json={
-                "embeds": [{
-                    "title": title,
-                    "color": 0x5EB3FF,
-                    "fields": [
-                        {"name": "Subject", "value": subject, "inline": True},
-                        {"name": "Category", "value": category, "inline": True},
-                        {"name": "From", "value": sender_name or "Anonymous"},
-                        {"name": "Message", "value": message[:1000]},
-                        {"name": "Ticket ID", "value": str(ticket_id)},
-                    ],
-                }]
-            },
-            timeout=5,
-        )
-    except Exception as e:
-        print("Discord ticket webhook error:", e)
+    payload = {
+        "embeds": [{
+            "title": title,
+            "color": 0x5EB3FF,
+            "fields": [
+                {"name": "Subject", "value": subject, "inline": True},
+                {"name": "Category", "value": category, "inline": True},
+                {"name": "From", "value": sender_name or "Anonymous"},
+                {"name": "Message", "value": message[:1000]},
+                {"name": "Ticket ID", "value": str(ticket_id)},
+            ],
+        }]
+    }
+    for webhook_url in webhooks:
+        try:
+            http_requests.post(webhook_url, json=payload, timeout=5)
+        except Exception as e:
+            print("Discord ticket webhook error:", e)
 
 @app.route("/tickets/create", methods=["POST", "OPTIONS"])
 def create_ticket():
