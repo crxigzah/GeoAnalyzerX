@@ -4013,6 +4013,70 @@ def admin_export_guides():
         "guides": guides,
     })
 
+@app.route("/admin/import_guides", methods=["POST","OPTIONS"])
+def admin_import_guides():
+    """Restores guides from a JSON backup previously produced by
+    /admin/export_guides.
+
+    mode='skip_existing' (default): only inserts guides whose iso isn't
+    already in the table. Safe default — won't clobber newer edits with
+    an older backup.
+    mode='overwrite': replaces existing guides with whatever's in the
+    backup file. Use this for an actual disaster-recovery restore where
+    the current data is the problem (e.g. something got deleted/corrupted
+    and the backup is known-good)."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    guides = d.get("guides") or []
+    mode = d.get("mode", "skip_existing")
+    if not guides:
+        return jsonify({"error": "No guides found in the uploaded file"}), 400
+
+    restored, skipped, errored = [], [], []
+    try:
+        conn = get_db()
+        for g in guides:
+            iso = (g.get("iso") or "").strip().upper()
+            country = g.get("country")
+            content = g.get("content")
+            source = g.get("source") or "ai"
+            last_edited_by = g.get("last_edited_by")
+            if not iso or not country or content is None:
+                errored.append(country or iso or "unknown entry")
+                continue
+            try:
+                if mode == "overwrite":
+                    conn.run("""INSERT INTO country_metas (iso, country, content, source, last_edited_by)
+                        VALUES (:iso, :country, :content, :source, :leb)
+                        ON CONFLICT (iso) DO UPDATE SET
+                            country=EXCLUDED.country, content=EXCLUDED.content,
+                            source=EXCLUDED.source, last_edited_by=EXCLUDED.last_edited_by,
+                            updated_at=NOW()""",
+                        iso=iso, country=country, content=content, source=source, leb=last_edited_by)
+                    restored.append(country)
+                else:
+                    existing = conn.run("SELECT 1 FROM country_metas WHERE iso=:iso", iso=iso)
+                    if existing:
+                        skipped.append(country)
+                    else:
+                        conn.run("""INSERT INTO country_metas (iso, country, content, source, last_edited_by)
+                            VALUES (:iso, :country, :content, :source, :leb)""",
+                            iso=iso, country=country, content=content, source=source, leb=last_edited_by)
+                        restored.append(country)
+            except Exception as inner_e:
+                errored.append(f"{country} ({inner_e})")
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+
+    return jsonify({
+        "restored": restored, "restored_count": len(restored),
+        "skipped": skipped, "skipped_count": len(skipped),
+        "errored": errored, "errored_count": len(errored),
+    })
+
 @app.route("/admin/dashboard", methods=["GET","OPTIONS"])
 def admin_dashboard():
     """Single endpoint that returns everything the admin panel needs on load:
