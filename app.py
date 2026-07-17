@@ -1454,8 +1454,7 @@ def get_guide_context(country, max_chars=1000):
     """Pulls real facts straight out of this country's own written guide
     (heading/text/tip/warning/img-text blocks), if one exists, so GeoX's
     clues are grounded in the site's own verified guide content rather
-    than generic model knowledge alone. Mirrors the same block-parsing
-    pattern used by /meta_quiz/random."""
+    than generic model knowledge alone."""
     if not country:
         return ""
     try:
@@ -4098,49 +4097,11 @@ def photo_quiz_random():
     except Exception as e:
         return safe_error(e)
 
-@app.route("/meta_quiz/random", methods=["GET","OPTIONS"])
-def meta_quiz_random():
-    """Meta Speed Quiz — pulls a random real fact directly out of an
-    existing written guide's img-text/tip/warning blocks, and asks which
-    country it describes. No new content to maintain — it reuses guides
-    you've already written."""
-    if request.method == "OPTIONS": return jsonify({}), 200
-    try:
-        conn = get_db()
-        rows = conn.run("""SELECT country, content FROM country_metas
-            WHERE source='manual' AND content IS NOT NULL""")
-        conn.close()
-        candidates = []
-        for country, content in rows:
-            try:
-                blocks = _json.loads(content).get("blocks", [])
-            except Exception:
-                continue
-            for b in blocks:
-                if b.get("type") in ("img-text", "tip", "warning"):
-                    text = (b.get("data") or {}).get("text", "").strip()
-                    # Skip anything too short, or scaffold placeholder text
-                    # that was never actually filled in.
-                    if len(text) < 25 or "[" in text or "goes here" in text.lower():
-                        continue
-                    candidates.append({"country": country, "text": text})
-        if not candidates:
-            return jsonify({"error": "No guide facts available yet — write a few guides first"}), 404
-        pick = random.choice(candidates)
-        correct = pick["country"]
-        decoy_pool = [c for c in QUIZ_COUNTRY_POOL if c != correct]
-        decoys = random.sample(decoy_pool, min(4, len(decoy_pool)))
-        options = decoys + [correct]
-        random.shuffle(options)
-        return jsonify({ "clue_text": pick["text"], "correct_country": correct, "options": options })
-    except Exception as e:
-        return safe_error(e)
-
 @app.route("/daily_challenge", methods=["GET","OPTIONS"])
 def daily_challenge():
     """One deterministic challenge per calendar day, the same for every
-    player — combines all quiz pools (camera gen, the 4 photo-quiz types,
-    and meta facts) so the daily pick can be any training format."""
+    player — combines all quiz pools (camera gen and the photo-quiz types)
+    so the daily pick can be any training format."""
     if request.method == "OPTIONS": return jsonify({}), 200
     try:
         today = datetime.date.today().isoformat()
