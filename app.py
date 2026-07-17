@@ -313,6 +313,26 @@ def init_db():
             status TEXT DEFAULT 'open',
             created_at TIMESTAMPTZ DEFAULT NOW())""")
         conn.run("CREATE INDEX IF NOT EXISTS idx_meta_reports_status ON meta_reports(status)")
+        conn.run("""CREATE TABLE IF NOT EXISTS tickets (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            user_id INT,
+            username TEXT,
+            email TEXT,
+            category TEXT DEFAULT 'other',
+            subject TEXT NOT NULL,
+            status TEXT DEFAULT 'open',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id)")
+        conn.run("""CREATE TABLE IF NOT EXISTS ticket_messages (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            ticket_id UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+            sender_type TEXT NOT NULL,
+            sender_name TEXT,
+            message TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_id)")
         conn.close()
         print("DB init OK")
     except Exception as e:
@@ -2043,6 +2063,184 @@ def notify_discord_bug_report(name, email, message):
         )
     except Exception as e:
         print("Discord bug report webhook error:", e)
+
+TICKET_CATEGORIES = {"bug", "feature", "meta", "billing", "account", "other"}
+
+def notify_discord_ticket(event, ticket_id, subject, category, sender_name, message):
+    """Best-effort Discord webhook ping for ticket activity. Reuses the
+    same webhook already set up for meta reports, since this general
+    ticket system supersedes that one-way flow. event is 'new' or
+    'reply'. Never raises — same reasoning as the other notify_discord_*
+    helpers above."""
+    if not DISCORD_META_REPORT_WEBHOOK:
+        return
+    title = "🎫 New Ticket" if event == "new" else "💬 New Reply on Ticket"
+    try:
+        http_requests.post(
+            DISCORD_META_REPORT_WEBHOOK,
+            json={
+                "embeds": [{
+                    "title": title,
+                    "color": 0x5EB3FF,
+                    "fields": [
+                        {"name": "Subject", "value": subject, "inline": True},
+                        {"name": "Category", "value": category, "inline": True},
+                        {"name": "From", "value": sender_name or "Anonymous"},
+                        {"name": "Message", "value": message[:1000]},
+                        {"name": "Ticket ID", "value": str(ticket_id)},
+                    ],
+                }]
+            },
+            timeout=5,
+        )
+    except Exception as e:
+        print("Discord ticket webhook error:", e)
+
+@app.route("/tickets/create", methods=["POST", "OPTIONS"])
+def create_ticket():
+    """Creates a new support ticket. Works whether or not the person is
+    logged in — a token is optional here, but if present and valid, the
+    ticket gets tied to that user so it shows up in their 'My Tickets'
+    list later. Anonymous submitters can't track their ticket afterward
+    (no account to look it up under)."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    if rate_limited("ticket_create", client_ip(), max_attempts=10, window_seconds=300):
+        return jsonify({"error": "Too many tickets — please try again in a few minutes."}), 429
+    d = request.json or {}
+    subject = (d.get("subject") or "").strip()
+    message = (d.get("message") or "").strip()
+    category = (d.get("category") or "other").strip().lower()
+    if category not in TICKET_CATEGORIES:
+        category = "other"
+    if not subject:
+        return jsonify({"error": "Subject required"}), 400
+    if not message:
+        return jsonify({"error": "Please describe your issue"}), 400
+    if len(subject) > 200:
+        return jsonify({"error": "Subject is too long"}), 400
+    if len(message) > 4000:
+        return jsonify({"error": "Message is too long"}), 400
+
+    token = d.get("token", "")
+    user_id, tier, username = get_user_from_token(token) if token else (None, None, None)
+    email = (d.get("email") or "").strip() or None
+    if user_id:
+        try:
+            conn = get_db()
+            rows = conn.run("SELECT email FROM users WHERE id=:uid", uid=user_id)
+            conn.close()
+            if rows:
+                email = rows[0][0]
+        except Exception:
+            pass
+
+    try:
+        conn = get_db()
+        rows = conn.run("""INSERT INTO tickets (user_id, username, email, category, subject)
+            VALUES (:uid, :username, :email, :category, :subject) RETURNING id""",
+            uid=user_id, username=username, email=email, category=category, subject=subject)
+        ticket_id = rows[0][0]
+        conn.run("""INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message)
+            VALUES (:tid, 'user', :sender, :message)""",
+            tid=ticket_id, sender=username or 'Anonymous', message=message)
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+
+    notify_discord_ticket('new', ticket_id, subject, category, username or email, message)
+    return jsonify({"success": True, "ticket_id": str(ticket_id)})
+
+@app.route("/tickets/mine", methods=["GET", "OPTIONS"])
+def my_tickets():
+    """Lists the logged-in user's own tickets, newest-updated first."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    token = request.args.get("token", "")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT id, category, subject, status, created_at, updated_at
+            FROM tickets WHERE user_id=:uid ORDER BY updated_at DESC""", uid=user_id)
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+    return jsonify({"tickets": [
+        {"id": str(r[0]), "category": r[1], "subject": r[2], "status": r[3],
+         "created_at": str(r[4]), "updated_at": str(r[5])}
+        for r in rows
+    ]})
+
+@app.route("/tickets/<ticket_id>", methods=["GET", "OPTIONS"])
+def get_ticket(ticket_id):
+    """Returns a single ticket's full thread. Only the ticket's owner
+    (via token) can view it here — admins use the separate
+    /admin/tickets/<id> route below instead."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    token = request.args.get("token", "")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT id, user_id, category, subject, status, created_at, updated_at
+            FROM tickets WHERE id=:tid""", tid=ticket_id)
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Ticket not found"}), 404
+        t = rows[0]
+        if t[1] != user_id:
+            conn.close()
+            return jsonify({"error": "Not your ticket"}), 403
+        msgs = conn.run("""SELECT sender_type, sender_name, message, created_at
+            FROM ticket_messages WHERE ticket_id=:tid ORDER BY created_at ASC""", tid=ticket_id)
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+    return jsonify({
+        "id": str(t[0]), "category": t[2], "subject": t[3], "status": t[4],
+        "created_at": str(t[5]), "updated_at": str(t[6]),
+        "messages": [
+            {"sender_type": m[0], "sender_name": m[1], "message": m[2], "created_at": str(m[3])}
+            for m in msgs
+        ]
+    })
+
+@app.route("/tickets/<ticket_id>/reply", methods=["POST", "OPTIONS"])
+def reply_ticket(ticket_id):
+    """Adds a user reply to their own ticket. Reopens the ticket if it
+    was previously marked resolved — a reply means it isn't actually
+    done from the user's side."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Not logged in"}), 401
+    message = (d.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "Message required"}), 400
+    if len(message) > 4000:
+        return jsonify({"error": "Message is too long"}), 400
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT user_id, subject, category FROM tickets WHERE id=:tid", tid=ticket_id)
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Ticket not found"}), 404
+        if rows[0][0] != user_id:
+            conn.close()
+            return jsonify({"error": "Not your ticket"}), 403
+        subject, category = rows[0][1], rows[0][2]
+        conn.run("""INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message)
+            VALUES (:tid, 'user', :sender, :message)""",
+            tid=ticket_id, sender=username, message=message)
+        conn.run("UPDATE tickets SET status='open', updated_at=NOW() WHERE id=:tid", tid=ticket_id)
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+    notify_discord_ticket('reply', ticket_id, subject, category, username, message)
+    return jsonify({"success": True})
 
 @app.route("/guess/stats", methods=["POST", "OPTIONS"])
 def guess_stats():
@@ -4174,6 +4372,114 @@ def admin_resolve_meta_report():
         conn.run("UPDATE meta_reports SET status=:s WHERE id=:id", s=new_status, id=report_id)
         conn.close()
         return jsonify({"success": True, "status": new_status})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/tickets", methods=["GET","OPTIONS"])
+def admin_list_tickets():
+    """Lists all support tickets, newest-updated first. Optional
+    ?status=open/in_progress/resolved/closed and ?category= filters."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    status_filter = request.args.get("status")
+    category_filter = request.args.get("category")
+    query = """SELECT id, username, email, category, subject, status, created_at, updated_at
+        FROM tickets WHERE 1=1"""
+    params = {}
+    if status_filter:
+        query += " AND status=:s"
+        params["s"] = status_filter
+    if category_filter:
+        query += " AND category=:c"
+        params["c"] = category_filter
+    query += " ORDER BY updated_at DESC"
+    try:
+        conn = get_db()
+        rows = conn.run(query, **params)
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+    return jsonify({"tickets": [
+        {"id":str(r[0]),"username":r[1],"email":r[2],"category":r[3],"subject":r[4],
+         "status":r[5],"created_at":str(r[6]),"updated_at":str(r[7])}
+        for r in rows
+    ]})
+
+@app.route("/admin/tickets/<ticket_id>", methods=["GET","OPTIONS"])
+def admin_get_ticket(ticket_id):
+    """Full thread view for one ticket, admin side — no ownership check
+    needed since require_admin() already gates this whole route."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT id, username, email, category, subject, status, created_at, updated_at
+            FROM tickets WHERE id=:tid""", tid=ticket_id)
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Ticket not found"}), 404
+        t = rows[0]
+        msgs = conn.run("""SELECT sender_type, sender_name, message, created_at
+            FROM ticket_messages WHERE ticket_id=:tid ORDER BY created_at ASC""", tid=ticket_id)
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+    return jsonify({
+        "id": str(t[0]), "username": t[1], "email": t[2], "category": t[3], "subject": t[4],
+        "status": t[5], "created_at": str(t[6]), "updated_at": str(t[7]),
+        "messages": [
+            {"sender_type": m[0], "sender_name": m[1], "message": m[2], "created_at": str(m[3])}
+            for m in msgs
+        ]
+    })
+
+@app.route("/admin/tickets/<ticket_id>/reply", methods=["POST","OPTIONS"])
+def admin_reply_ticket(ticket_id):
+    """Admin reply to a ticket. Auto-moves a still-'open' ticket to
+    'in_progress' — an admin reply means someone's actively looking at
+    it, distinct from the user-reply route which reopens to 'open'."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    message = (d.get("message") or "").strip()
+    admin_name = (d.get("admin_name") or "GeoAnalyzerX Team").strip()
+    if not message:
+        return jsonify({"error": "Message required"}), 400
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT id FROM tickets WHERE id=:tid", tid=ticket_id)
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Ticket not found"}), 404
+        conn.run("""INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message)
+            VALUES (:tid, 'admin', :sender, :message)""",
+            tid=ticket_id, sender=admin_name, message=message)
+        conn.run("UPDATE tickets SET status='in_progress', updated_at=NOW() WHERE id=:tid AND status='open'", tid=ticket_id)
+        conn.run("UPDATE tickets SET updated_at=NOW() WHERE id=:tid", tid=ticket_id)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/tickets/<ticket_id>/status", methods=["POST","OPTIONS"])
+def admin_set_ticket_status(ticket_id):
+    """Directly sets a ticket's status — open, in_progress, resolved, or
+    closed — without requiring a reply message."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    status = (d.get("status") or "").strip()
+    if status not in ("open", "in_progress", "resolved", "closed"):
+        return jsonify({"error": "Invalid status"}), 400
+    try:
+        conn = get_db()
+        conn.run("UPDATE tickets SET status=:s, updated_at=NOW() WHERE id=:tid", s=status, tid=ticket_id)
+        conn.close()
+        return jsonify({"success": True, "status": status})
     except Exception as e:
         return safe_error(e)
 
