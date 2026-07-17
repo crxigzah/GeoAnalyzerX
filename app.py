@@ -3984,6 +3984,35 @@ def admin_list_country_metas():
     except Exception as e:
         return safe_error(e)
 
+@app.route("/admin/export_guides", methods=["GET","OPTIONS"])
+def admin_export_guides():
+    """Full backup export of every country guide's actual content — not
+    just the metadata admin_list_country_metas above returns. Meant to
+    be downloaded and kept somewhere safe independent of whatever backup
+    policy (or lack of one) applies to the database itself."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT iso, country, content, source, last_edited_by, created_at, updated_at
+            FROM country_metas ORDER BY country ASC""")
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+    guides = [
+        {
+            "iso": r[0], "country": r[1], "content": r[2], "source": r[3],
+            "last_edited_by": r[4], "created_at": str(r[5]), "updated_at": str(r[6]),
+        }
+        for r in rows
+    ]
+    return jsonify({
+        "exported_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "count": len(guides),
+        "guides": guides,
+    })
+
 @app.route("/admin/dashboard", methods=["GET","OPTIONS"])
 def admin_dashboard():
     """Single endpoint that returns everything the admin panel needs on load:
