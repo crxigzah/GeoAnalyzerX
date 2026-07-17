@@ -330,6 +330,8 @@ def init_db():
             updated_at TIMESTAMPTZ DEFAULT NOW())""")
         conn.run("CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)")
         conn.run("CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id)")
+        conn.run("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_admin_id INT")
+        conn.run("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_admin_name TEXT")
         conn.run("""CREATE TABLE IF NOT EXISTS ticket_messages (
             id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
             ticket_id UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
@@ -3441,7 +3443,7 @@ def admin_login():
         token = secrets.token_urlsafe(32)
         conn.run("INSERT INTO sessions (token,user_id) VALUES (:t,:uid)", t=token, uid=user_id)
         conn.close()
-        return jsonify({"admin_token": token, "username": rows[0][1], "email": rows[0][2]})
+        return jsonify({"admin_token": token, "id": user_id, "username": rows[0][1], "email": rows[0][2]})
     except Exception as e:
         return safe_error(e)
 
@@ -4396,7 +4398,7 @@ def admin_list_tickets():
     if not ok: return err
     status_filter = request.args.get("status")
     category_filter = request.args.get("category")
-    query = """SELECT id, username, email, category, subject, status, created_at, updated_at
+    query = """SELECT id, username, email, category, subject, status, created_at, updated_at, assigned_admin_name
         FROM tickets WHERE 1=1"""
     params = {}
     if status_filter:
@@ -4414,7 +4416,7 @@ def admin_list_tickets():
         return safe_error(e)
     return jsonify({"tickets": [
         {"id":str(r[0]),"username":r[1],"email":r[2],"category":r[3],"subject":r[4],
-         "status":r[5],"created_at":str(r[6]),"updated_at":str(r[7])}
+         "status":r[5],"created_at":str(r[6]),"updated_at":str(r[7]),"assigned_admin_name":r[8]}
         for r in rows
     ]})
 
@@ -4427,7 +4429,7 @@ def admin_get_ticket(ticket_id):
     if not ok: return err
     try:
         conn = get_db()
-        rows = conn.run("""SELECT id, username, email, category, subject, status, created_at, updated_at
+        rows = conn.run("""SELECT id, username, email, category, subject, status, created_at, updated_at, assigned_admin_id, assigned_admin_name
             FROM tickets WHERE id=:tid""", tid=ticket_id)
         if not rows:
             conn.close()
@@ -4441,6 +4443,7 @@ def admin_get_ticket(ticket_id):
     return jsonify({
         "id": str(t[0]), "username": t[1], "email": t[2], "category": t[3], "subject": t[4],
         "status": t[5], "created_at": str(t[6]), "updated_at": str(t[7]),
+        "assigned_admin_id": t[8], "assigned_admin_name": t[9],
         "messages": [
             {"sender_type": m[0], "sender_name": m[1], "message": m[2], "created_at": str(m[3])}
             for m in msgs
@@ -4457,20 +4460,69 @@ def admin_reply_ticket(ticket_id):
     if not ok: return err
     d = request.json or {}
     message = (d.get("message") or "").strip()
-    admin_name = (d.get("admin_name") or "GeoAnalyzerX Team").strip()
     if not message:
         return jsonify({"error": "Message required"}), 400
     try:
         conn = get_db()
-        rows = conn.run("SELECT id FROM tickets WHERE id=:tid", tid=ticket_id)
+        rows = conn.run("SELECT assigned_admin_name FROM tickets WHERE id=:tid", tid=ticket_id)
         if not rows:
             conn.close()
             return jsonify({"error": "Ticket not found"}), 404
+        # Explicit admin_name in the request wins; otherwise fall back to
+        # whoever this ticket is assigned to, so replies are consistently
+        # attributed without the admin having to retype a name each time.
+        admin_name = (d.get("admin_name") or "").strip() or rows[0][0] or "GeoAnalyzerX Team"
         conn.run("""INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message)
             VALUES (:tid, 'admin', :sender, :message)""",
             tid=ticket_id, sender=admin_name, message=message)
         conn.run("UPDATE tickets SET status='in_progress', updated_at=NOW() WHERE id=:tid AND status='open'", tid=ticket_id)
         conn.run("UPDATE tickets SET updated_at=NOW() WHERE id=:tid", tid=ticket_id)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/admin/admins", methods=["GET","OPTIONS"])
+def admin_list_admins():
+    """Lists every account with is_admin=TRUE — used to populate the
+    ticket 'Assign' dropdown."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT id, username, email FROM users WHERE is_admin=TRUE ORDER BY username ASC")
+        conn.close()
+    except Exception as e:
+        return safe_error(e)
+    return jsonify({"admins": [{"id": r[0], "username": r[1], "email": r[2]} for r in rows]})
+
+@app.route("/admin/tickets/<ticket_id>/assign", methods=["POST","OPTIONS"])
+def admin_assign_ticket(ticket_id):
+    """Assigns a ticket to an admin. admin_id may be null/omitted to
+    unassign. display_name lets the assigning admin choose what name
+    shows up on the ticket and on any replies they send afterward
+    (e.g. a first name instead of their raw account username) — see
+    admin_reply_ticket above, which uses this as the default sender name."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    admin_id = d.get("admin_id")
+    display_name = (d.get("display_name") or "").strip() or None
+    try:
+        conn = get_db()
+        if admin_id:
+            rows = conn.run("SELECT username FROM users WHERE id=:aid AND is_admin=TRUE", aid=admin_id)
+            if not rows:
+                conn.close()
+                return jsonify({"error": "Not a valid admin account"}), 400
+            name = display_name or rows[0][0]
+            conn.run("""UPDATE tickets SET assigned_admin_id=:aid, assigned_admin_name=:name, updated_at=NOW()
+                WHERE id=:tid""", aid=admin_id, name=name, tid=ticket_id)
+        else:
+            conn.run("""UPDATE tickets SET assigned_admin_id=NULL, assigned_admin_name=NULL, updated_at=NOW()
+                WHERE id=:tid""", tid=ticket_id)
         conn.close()
         return jsonify({"success": True})
     except Exception as e:
