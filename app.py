@@ -332,6 +332,27 @@ def init_db():
         conn.run("CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id)")
         conn.run("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_admin_id INT")
         conn.run("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_admin_name TEXT")
+        conn.run("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT 'normal'")
+        # Human-friendly sequential ticket number (e.g. #1000, #1001…),
+        # separate from the internal UUID primary key — used for the
+        # "look up an old ticket by number" search and shown throughout
+        # the admin ticket page.
+        conn.run("CREATE SEQUENCE IF NOT EXISTS ticket_number_seq START WITH 1000")
+        conn.run("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ticket_number INT")
+        conn.run("ALTER TABLE tickets ALTER COLUMN ticket_number SET DEFAULT nextval('ticket_number_seq')")
+        # Backfill any pre-existing rows (from before this column existed)
+        # with sequential numbers ordered by creation date, then make sure
+        # the sequence continues on from whatever was just assigned.
+        conn.run("""
+            WITH numbered AS (
+                SELECT id, ROW_NUMBER() OVER (ORDER BY created_at) + 999 AS rn
+                FROM tickets WHERE ticket_number IS NULL
+            )
+            UPDATE tickets SET ticket_number = numbered.rn
+            FROM numbered WHERE tickets.id = numbered.id
+        """)
+        conn.run("SELECT setval('ticket_number_seq', GREATEST((SELECT COALESCE(MAX(ticket_number),999) FROM tickets), 999))")
+        conn.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_number ON tickets(ticket_number)")
         conn.run("""CREATE TABLE IF NOT EXISTS ticket_messages (
             id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
             ticket_id UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
@@ -2073,7 +2094,7 @@ def notify_discord_bug_report(name, email, message):
 
 TICKET_CATEGORIES = {"bug", "feature", "meta", "billing", "account", "other"}
 
-def notify_discord_ticket(event, ticket_id, subject, category, sender_name, message):
+def notify_discord_ticket(event, ticket_number, subject, category, sender_name, message):
     """Best-effort Discord webhook ping for ticket activity, routed to
     the right channel by category: bug reports go to the bug channel,
     meta reports go to the meta channel, and everything else (feature,
@@ -2099,7 +2120,7 @@ def notify_discord_ticket(event, ticket_id, subject, category, sender_name, mess
                 {"name": "Category", "value": category, "inline": True},
                 {"name": "From", "value": sender_name or "Anonymous"},
                 {"name": "Message", "value": message[:1000]},
-                {"name": "Ticket ID", "value": str(ticket_id)},
+                {"name": "Ticket #", "value": str(ticket_number)},
             ],
         }]
     }
@@ -2151,9 +2172,9 @@ def create_ticket():
     try:
         conn = get_db()
         rows = conn.run("""INSERT INTO tickets (user_id, username, email, category, subject)
-            VALUES (:uid, :username, :email, :category, :subject) RETURNING id""",
+            VALUES (:uid, :username, :email, :category, :subject) RETURNING id, ticket_number""",
             uid=user_id, username=username, email=email, category=category, subject=subject)
-        ticket_id = rows[0][0]
+        ticket_id, ticket_number = rows[0][0], rows[0][1]
         conn.run("""INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message)
             VALUES (:tid, 'user', :sender, :message)""",
             tid=ticket_id, sender=username or 'Anonymous', message=message)
@@ -2161,8 +2182,8 @@ def create_ticket():
     except Exception as e:
         return safe_error(e)
 
-    notify_discord_ticket('new', ticket_id, subject, category, username or email, message)
-    return jsonify({"success": True, "ticket_id": str(ticket_id)})
+    notify_discord_ticket('new', ticket_number, subject, category, username or email, message)
+    return jsonify({"success": True, "ticket_id": str(ticket_id), "ticket_number": ticket_number})
 
 @app.route("/tickets/mine", methods=["GET", "OPTIONS"])
 def my_tickets():
@@ -2174,14 +2195,14 @@ def my_tickets():
         return jsonify({"error": "Not logged in"}), 401
     try:
         conn = get_db()
-        rows = conn.run("""SELECT id, category, subject, status, created_at, updated_at
+        rows = conn.run("""SELECT id, ticket_number, category, subject, status, created_at, updated_at
             FROM tickets WHERE user_id=:uid ORDER BY updated_at DESC""", uid=user_id)
         conn.close()
     except Exception as e:
         return safe_error(e)
     return jsonify({"tickets": [
-        {"id": str(r[0]), "category": r[1], "subject": r[2], "status": r[3],
-         "created_at": str(r[4]), "updated_at": str(r[5])}
+        {"id": str(r[0]), "ticket_number": r[1], "category": r[2], "subject": r[3], "status": r[4],
+         "created_at": str(r[5]), "updated_at": str(r[6])}
         for r in rows
     ]})
 
@@ -2197,7 +2218,7 @@ def get_ticket(ticket_id):
         return jsonify({"error": "Not logged in"}), 401
     try:
         conn = get_db()
-        rows = conn.run("""SELECT id, user_id, category, subject, status, created_at, updated_at
+        rows = conn.run("""SELECT id, user_id, ticket_number, category, subject, status, created_at, updated_at
             FROM tickets WHERE id=:tid""", tid=ticket_id)
         if not rows:
             conn.close()
@@ -2212,8 +2233,8 @@ def get_ticket(ticket_id):
     except Exception as e:
         return safe_error(e)
     return jsonify({
-        "id": str(t[0]), "category": t[2], "subject": t[3], "status": t[4],
-        "created_at": str(t[5]), "updated_at": str(t[6]),
+        "id": str(t[0]), "ticket_number": t[2], "category": t[3], "subject": t[4], "status": t[5],
+        "created_at": str(t[6]), "updated_at": str(t[7]),
         "messages": [
             {"sender_type": m[0], "sender_name": m[1], "message": m[2], "created_at": str(m[3])}
             for m in msgs
@@ -2238,14 +2259,14 @@ def reply_ticket(ticket_id):
         return jsonify({"error": "Message is too long"}), 400
     try:
         conn = get_db()
-        rows = conn.run("SELECT user_id, subject, category FROM tickets WHERE id=:tid", tid=ticket_id)
+        rows = conn.run("SELECT user_id, subject, category, ticket_number FROM tickets WHERE id=:tid", tid=ticket_id)
         if not rows:
             conn.close()
             return jsonify({"error": "Ticket not found"}), 404
         if rows[0][0] != user_id:
             conn.close()
             return jsonify({"error": "Not your ticket"}), 403
-        subject, category = rows[0][1], rows[0][2]
+        subject, category, ticket_number = rows[0][1], rows[0][2], rows[0][3]
         conn.run("""INSERT INTO ticket_messages (ticket_id, sender_type, sender_name, message)
             VALUES (:tid, 'user', :sender, :message)""",
             tid=ticket_id, sender=username, message=message)
@@ -2253,7 +2274,7 @@ def reply_ticket(ticket_id):
         conn.close()
     except Exception as e:
         return safe_error(e)
-    notify_discord_ticket('reply', ticket_id, subject, category, username, message)
+    notify_discord_ticket('reply', ticket_number, subject, category, username, message)
     return jsonify({"success": True})
 
 @app.route("/guess/stats", methods=["POST", "OPTIONS"])
@@ -4392,13 +4413,16 @@ def admin_resolve_meta_report():
 @app.route("/admin/tickets", methods=["GET","OPTIONS"])
 def admin_list_tickets():
     """Lists all support tickets, newest-updated first. Optional
-    ?status=open/in_progress/resolved/closed and ?category= filters."""
+    ?status=open/in_progress/resolved/closed, ?category=, and
+    ?assigned_to=<admin_id> filters."""
     if request.method == "OPTIONS": return jsonify({}), 200
     ok, err = require_admin()
     if not ok: return err
     status_filter = request.args.get("status")
     category_filter = request.args.get("category")
-    query = """SELECT id, username, email, category, subject, status, created_at, updated_at, assigned_admin_name
+    assigned_filter = request.args.get("assigned_to")
+    query = """SELECT id, ticket_number, username, email, category, subject, status, created_at, updated_at,
+        assigned_admin_id, assigned_admin_name, priority
         FROM tickets WHERE 1=1"""
     params = {}
     if status_filter:
@@ -4407,6 +4431,9 @@ def admin_list_tickets():
     if category_filter:
         query += " AND category=:c"
         params["c"] = category_filter
+    if assigned_filter:
+        query += " AND assigned_admin_id=:a"
+        params["a"] = assigned_filter
     query += " ORDER BY updated_at DESC"
     try:
         conn = get_db()
@@ -4415,10 +4442,42 @@ def admin_list_tickets():
     except Exception as e:
         return safe_error(e)
     return jsonify({"tickets": [
-        {"id":str(r[0]),"username":r[1],"email":r[2],"category":r[3],"subject":r[4],
-         "status":r[5],"created_at":str(r[6]),"updated_at":str(r[7]),"assigned_admin_name":r[8]}
+        {"id":str(r[0]),"ticket_number":r[1],"username":r[2],"email":r[3],"category":r[4],"subject":r[5],
+         "status":r[6],"created_at":str(r[7]),"updated_at":str(r[8]),
+         "assigned_admin_id":r[9],"assigned_admin_name":r[10],"priority":r[11]}
         for r in rows
     ]})
+
+def _admin_ticket_detail_response(ticket_id=None, ticket_number=None):
+    """Shared lookup used by both /admin/tickets/<id> (by internal UUID)
+    and /admin/tickets/by-number/<number> (by the human-friendly ticket
+    number) — same full-thread shape either way, just a different
+    WHERE clause to find the row."""
+    conn = get_db()
+    if ticket_number is not None:
+        rows = conn.run("""SELECT id, ticket_number, username, email, category, subject, status, created_at, updated_at,
+            assigned_admin_id, assigned_admin_name, priority
+            FROM tickets WHERE ticket_number=:tn""", tn=ticket_number)
+    else:
+        rows = conn.run("""SELECT id, ticket_number, username, email, category, subject, status, created_at, updated_at,
+            assigned_admin_id, assigned_admin_name, priority
+            FROM tickets WHERE id=:tid""", tid=ticket_id)
+    if not rows:
+        conn.close()
+        return None
+    t = rows[0]
+    msgs = conn.run("""SELECT sender_type, sender_name, message, created_at
+        FROM ticket_messages WHERE ticket_id=:tid ORDER BY created_at ASC""", tid=t[0])
+    conn.close()
+    return {
+        "id": str(t[0]), "ticket_number": t[1], "username": t[2], "email": t[3], "category": t[4], "subject": t[5],
+        "status": t[6], "created_at": str(t[7]), "updated_at": str(t[8]),
+        "assigned_admin_id": t[9], "assigned_admin_name": t[10], "priority": t[11],
+        "messages": [
+            {"sender_type": m[0], "sender_name": m[1], "message": m[2], "created_at": str(m[3])}
+            for m in msgs
+        ]
+    }
 
 @app.route("/admin/tickets/<ticket_id>", methods=["GET","OPTIONS"])
 def admin_get_ticket(ticket_id):
@@ -4428,27 +4487,45 @@ def admin_get_ticket(ticket_id):
     ok, err = require_admin()
     if not ok: return err
     try:
-        conn = get_db()
-        rows = conn.run("""SELECT id, username, email, category, subject, status, created_at, updated_at, assigned_admin_id, assigned_admin_name
-            FROM tickets WHERE id=:tid""", tid=ticket_id)
-        if not rows:
-            conn.close()
-            return jsonify({"error": "Ticket not found"}), 404
-        t = rows[0]
-        msgs = conn.run("""SELECT sender_type, sender_name, message, created_at
-            FROM ticket_messages WHERE ticket_id=:tid ORDER BY created_at ASC""", tid=ticket_id)
-        conn.close()
+        result = _admin_ticket_detail_response(ticket_id=ticket_id)
     except Exception as e:
         return safe_error(e)
-    return jsonify({
-        "id": str(t[0]), "username": t[1], "email": t[2], "category": t[3], "subject": t[4],
-        "status": t[5], "created_at": str(t[6]), "updated_at": str(t[7]),
-        "assigned_admin_id": t[8], "assigned_admin_name": t[9],
-        "messages": [
-            {"sender_type": m[0], "sender_name": m[1], "message": m[2], "created_at": str(m[3])}
-            for m in msgs
-        ]
-    })
+    if result is None:
+        return jsonify({"error": "Ticket not found"}), 404
+    return jsonify(result)
+
+@app.route("/admin/tickets/by-number/<int:ticket_number>", methods=["GET","OPTIONS"])
+def admin_get_ticket_by_number(ticket_number):
+    """Looks up any ticket — open or long since closed — by its
+    human-friendly ticket number, for the 'find an old ticket' search."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    try:
+        result = _admin_ticket_detail_response(ticket_number=ticket_number)
+    except Exception as e:
+        return safe_error(e)
+    if result is None:
+        return jsonify({"error": f"No ticket found with number #{ticket_number}"}), 404
+    return jsonify(result)
+
+@app.route("/admin/tickets/<ticket_id>/priority", methods=["POST","OPTIONS"])
+def admin_set_ticket_priority(ticket_id):
+    """Sets a ticket's priority — low, normal, high, or urgent."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    priority = (d.get("priority") or "").strip().lower()
+    if priority not in ("low", "normal", "high", "urgent"):
+        return jsonify({"error": "Invalid priority"}), 400
+    try:
+        conn = get_db()
+        conn.run("UPDATE tickets SET priority=:p, updated_at=NOW() WHERE id=:tid", p=priority, tid=ticket_id)
+        conn.close()
+        return jsonify({"success": True, "priority": priority})
+    except Exception as e:
+        return safe_error(e)
 
 @app.route("/admin/tickets/<ticket_id>/reply", methods=["POST","OPTIONS"])
 def admin_reply_ticket(ticket_id):
