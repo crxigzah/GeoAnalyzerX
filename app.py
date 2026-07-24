@@ -308,6 +308,14 @@ def init_db():
             correct_country TEXT NOT NULL,
             created_at TIMESTAMPTZ DEFAULT NOW())""")
         conn.run("CREATE INDEX IF NOT EXISTS idx_photo_quiz_type ON photo_quiz_images(quiz_type)")
+        conn.run("""CREATE TABLE IF NOT EXISTS photo_quiz_streaks (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            quiz_type TEXT NOT NULL,
+            best_streak INT NOT NULL DEFAULT 0,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(user_id, quiz_type))""")
+        conn.run("CREATE INDEX IF NOT EXISTS idx_photo_quiz_streaks_type ON photo_quiz_streaks(quiz_type, best_streak DESC)")
         conn.run("""CREATE TABLE IF NOT EXISTS meta_reports (
             id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
             country TEXT NOT NULL,
@@ -3886,7 +3894,7 @@ QUIZ_COUNTRY_POOL = [
   "Turkey","Uganda","Ukraine","United Arab Emirates","United Kingdom",
   "United States of America","Uruguay","Vietnam"
 ]
-VALID_PHOTO_QUIZ_TYPES = ["bollard", "sign_shape", "vegetation", "license_plate"]
+VALID_PHOTO_QUIZ_TYPES = ["bollard", "sign_shape", "vegetation", "license_plate", "fifty_fifty", "google_car"]
 
 @app.route("/admin/camera_quiz/upload", methods=["POST","OPTIONS"])
 def admin_camera_quiz_upload():
@@ -4094,6 +4102,65 @@ def photo_quiz_random():
             "correct_country": correct,
             "options": options
         })
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/photo_quiz/streak", methods=["POST","OPTIONS"])
+def photo_quiz_streak():
+    """Records a user's best streak for a given photo-quiz game type, used
+    to power the leaderboard. Only ever raises the stored value — never
+    lowers it — so a client can safely call this any time it beats its own
+    previous best without needing to check first."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    d = request.json or {}
+    token = d.get("token", "")
+    quiz_type = (d.get("quiz_type") or "").strip()
+    best_streak = d.get("best_streak")
+    user_id, tier, username = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Login required"}), 401
+    if quiz_type not in VALID_PHOTO_QUIZ_TYPES:
+        return jsonify({"error": f"quiz_type must be one of: {', '.join(VALID_PHOTO_QUIZ_TYPES)}"}), 400
+    try:
+        best_streak = int(best_streak)
+    except (TypeError, ValueError):
+        return jsonify({"error": "best_streak must be a number"}), 400
+    if best_streak < 0:
+        return jsonify({"error": "best_streak must be a positive number"}), 400
+    try:
+        conn = get_db()
+        conn.run("""INSERT INTO photo_quiz_streaks (user_id, quiz_type, best_streak)
+            VALUES (:uid, :qt, :streak)
+            ON CONFLICT (user_id, quiz_type) DO UPDATE
+                SET best_streak = GREATEST(photo_quiz_streaks.best_streak, EXCLUDED.best_streak),
+                    updated_at = NOW()""",
+            uid=user_id, qt=quiz_type, streak=best_streak)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
+@app.route("/photo_quiz/leaderboard", methods=["GET","OPTIONS"])
+def photo_quiz_leaderboard():
+    """Public — no login required to view. Top N users by best streak for
+    a given quiz_type, highest first."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    quiz_type = request.args.get("type", "")
+    if quiz_type not in VALID_PHOTO_QUIZ_TYPES:
+        return jsonify({"error": f"type must be one of: {', '.join(VALID_PHOTO_QUIZ_TYPES)}"}), 400
+    try:
+        limit = min(int(request.args.get("limit", 10)), 50)
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        conn = get_db()
+        rows = conn.run("""SELECT u.username, s.best_streak, s.user_id FROM photo_quiz_streaks s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.quiz_type=:qt ORDER BY s.best_streak DESC, s.updated_at ASC LIMIT :lim""",
+            qt=quiz_type, lim=limit)
+        conn.close()
+        leaderboard = [{"username": r[0], "best_streak": r[1], "user_id": r[2]} for r in rows]
+        return jsonify({"leaderboard": leaderboard})
     except Exception as e:
         return safe_error(e)
 
