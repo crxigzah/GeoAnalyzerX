@@ -306,7 +306,9 @@ def init_db():
             quiz_type TEXT NOT NULL,
             image_url TEXT NOT NULL,
             correct_country TEXT NOT NULL,
+            confuse_with TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW())""")
+        conn.run("ALTER TABLE photo_quiz_images ADD COLUMN IF NOT EXISTS confuse_with TEXT")
         conn.run("CREATE INDEX IF NOT EXISTS idx_photo_quiz_type ON photo_quiz_images(quiz_type)")
         conn.run("""CREATE TABLE IF NOT EXISTS photo_quiz_streaks (
             id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -4005,12 +4007,18 @@ def admin_photo_quiz_upload():
     image_b64 = d.get("image", "")
     quiz_type = (d.get("quiz_type") or "").strip()
     correct_country = (d.get("correct_country") or "").strip()
+    confuse_with = (d.get("confuse_with") or "").strip() or None
     if not image_b64:
         return jsonify({"error": "No image provided"}), 400
     if quiz_type not in VALID_PHOTO_QUIZ_TYPES:
         return jsonify({"error": f"quiz_type must be one of: {', '.join(VALID_PHOTO_QUIZ_TYPES)}"}), 400
     if correct_country not in QUIZ_COUNTRY_POOL:
         return jsonify({"error": "correct_country must be a recognised GeoGuessr-covered country"}), 400
+    if confuse_with is not None:
+        if confuse_with not in QUIZ_COUNTRY_POOL:
+            return jsonify({"error": "confuse_with must be a recognised GeoGuessr-covered country"}), 400
+        if confuse_with == correct_country:
+            return jsonify({"error": "confuse_with can't be the same country as correct_country"}), 400
     try:
         if "," in image_b64:
             header, image_b64 = image_b64.split(",", 1)
@@ -4035,8 +4043,8 @@ def admin_photo_quiz_upload():
         url = f"{SUPABASE_URL}/storage/v1/object/public/scenes/{storage_url_key(r2_key)}"
 
         conn = get_db()
-        conn.run("""INSERT INTO photo_quiz_images (quiz_type, image_url, correct_country)
-            VALUES (:qt, :url, :country)""", qt=quiz_type, url=url, country=correct_country)
+        conn.run("""INSERT INTO photo_quiz_images (quiz_type, image_url, correct_country, confuse_with)
+            VALUES (:qt, :url, :country, :confuse)""", qt=quiz_type, url=url, country=correct_country, confuse=confuse_with)
         conn.close()
         return jsonify({"success": True, "url": url})
     except Exception as e:
@@ -4051,13 +4059,14 @@ def admin_photo_quiz_list():
     try:
         conn = get_db()
         if quiz_type:
-            rows = conn.run("""SELECT id, quiz_type, image_url, correct_country, created_at
+            rows = conn.run("""SELECT id, quiz_type, image_url, correct_country, confuse_with, created_at
                 FROM photo_quiz_images WHERE quiz_type=:qt ORDER BY created_at DESC""", qt=quiz_type)
         else:
-            rows = conn.run("""SELECT id, quiz_type, image_url, correct_country, created_at
+            rows = conn.run("""SELECT id, quiz_type, image_url, correct_country, confuse_with, created_at
                 FROM photo_quiz_images ORDER BY created_at DESC""")
         conn.close()
-        images = [{"id": str(r[0]), "quiz_type": r[1], "image_url": r[2], "correct_country": r[3], "created_at": str(r[4])} for r in rows]
+        images = [{"id": str(r[0]), "quiz_type": r[1], "image_url": r[2], "correct_country": r[3],
+                   "confuse_with": r[4], "created_at": str(r[5])} for r in rows]
         return jsonify({"images": images})
     except Exception as e:
         return safe_error(e)
@@ -4075,6 +4084,33 @@ def admin_photo_quiz_delete(image_id):
     except Exception as e:
         return safe_error(e)
 
+@app.route("/admin/photo_quiz/confuse_with/<image_id>", methods=["POST","OPTIONS"])
+def admin_photo_quiz_set_confuse_with(image_id):
+    """Sets (or clears) the manual confuse_with override for a single 50/50
+    image, so a specific photo can be paired with a specific decoy country
+    instead of relying on the general CONFUSE_WITH lookup table."""
+    if request.method == "OPTIONS": return jsonify({}), 200
+    ok, err = require_admin()
+    if not ok: return err
+    d = request.json or {}
+    confuse_with = (d.get("confuse_with") or "").strip() or None
+    if confuse_with is not None and confuse_with not in QUIZ_COUNTRY_POOL:
+        return jsonify({"error": "confuse_with must be a recognised GeoGuessr-covered country"}), 400
+    try:
+        conn = get_db()
+        rows = conn.run("SELECT correct_country FROM photo_quiz_images WHERE id=:id", id=image_id)
+        if not rows:
+            conn.close()
+            return jsonify({"error": "Image not found"}), 404
+        if confuse_with is not None and confuse_with == rows[0][0]:
+            conn.close()
+            return jsonify({"error": "confuse_with can't be the same country as correct_country"}), 400
+        conn.run("UPDATE photo_quiz_images SET confuse_with=:confuse WHERE id=:id", confuse=confuse_with, id=image_id)
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return safe_error(e)
+
 @app.route("/photo_quiz/random", methods=["GET","OPTIONS"])
 def photo_quiz_random():
     """Public — no login required. Returns one random labeled photo of the
@@ -4086,12 +4122,13 @@ def photo_quiz_random():
         return jsonify({"error": f"type must be one of: {', '.join(VALID_PHOTO_QUIZ_TYPES)}"}), 400
     try:
         conn = get_db()
-        rows = conn.run("""SELECT id, image_url, correct_country FROM photo_quiz_images
+        rows = conn.run("""SELECT id, image_url, correct_country, confuse_with FROM photo_quiz_images
             WHERE quiz_type=:qt ORDER BY RANDOM() LIMIT 1""", qt=quiz_type)
         conn.close()
         if not rows:
             return jsonify({"error": "No quiz images available yet for this game"}), 404
         correct = rows[0][2]
+        confuse_with = rows[0][3]
         decoy_pool = [c for c in QUIZ_COUNTRY_POOL if c != correct]
         decoys = random.sample(decoy_pool, min(4, len(decoy_pool)))
         options = decoys + [correct]
@@ -4100,6 +4137,7 @@ def photo_quiz_random():
             "id": str(rows[0][0]),
             "image_url": rows[0][1],
             "correct_country": correct,
+            "confuse_with": confuse_with,
             "options": options
         })
     except Exception as e:
